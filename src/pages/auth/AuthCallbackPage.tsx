@@ -10,29 +10,51 @@ export function AuthCallbackPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const handleCallback = async () => {
-      const code = searchParams.get('code');
-      const errorParam = searchParams.get('error');
-      const errorDescription = searchParams.get('error_description');
+    const errorParam = searchParams.get('error');
+    const errorDescription = searchParams.get('error_description');
 
-      if (errorParam) {
-        setError(errorDescription ?? 'Authentication failed. Please try again.');
+    // Surface any OAuth error returned by the provider
+    if (errorParam) {
+      setError(errorDescription ?? 'Authentication failed. Please try again.');
+      return;
+    }
+
+    // Supabase client (with detectSessionInUrl: true + flowType: 'pkce') automatically
+    // exchanges the ?code= for a session when it sees it in the URL.
+    // We just need to wait for the AUTH_CODE_EXCHANGED / SIGNED_IN event.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        navigate('/', { replace: true });
+      } else if (event === 'TOKEN_REFRESHED' && session) {
+        navigate('/', { replace: true });
+      }
+    });
+
+    // Fallback: if a session already exists (e.g. the code was exchanged synchronously
+    // before our listener was attached), navigate immediately.
+    supabase.auth.getSession().then(({ data: { session }, error: sessionError }) => {
+      if (sessionError) {
+        setError('Failed to complete sign-in. Please try again.');
         return;
       }
-
-      if (code) {
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (error) {
-          setError('Failed to complete sign-in. Please try again.');
-          return;
-        }
+      if (session) {
+        navigate('/', { replace: true });
       }
+    });
 
-      // Session established — redirect to home
-      navigate('/', { replace: true });
+    // Safety timeout — if nothing resolves in 10 s, show an error
+    const timeout = setTimeout(() => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (!session) {
+          setError('Sign-in timed out. Please try again.');
+        }
+      });
+    }, 10_000);
+
+    return () => {
+      subscription.unsubscribe();
+      clearTimeout(timeout);
     };
-
-    void handleCallback();
   }, [navigate, searchParams]);
 
   if (error) {
