@@ -21,30 +21,6 @@ interface FriendBalance {
   netPaise: number;
 }
 
-interface ShareWithExpense {
-  expense_id: string;
-  amount_paise: number;
-  expenses: {
-    id: string; status: string;
-    expense_payers: { user_id: string; amount_paise: number }[];
-  } | null;
-}
-
-interface PaidExpense {
-  expense_id: string;
-  amount_paise: number;
-  expenses: {
-    id: string; status: string;
-    expense_shares: { user_id: string; amount_paise: number }[];
-  } | null;
-}
-
-interface SettlementRow {
-  payer_id: string;
-  recipient_id: string;
-  amount_paise: number;
-  status: string;
-}
 
 export function HomePage() {
   const { user, emailVerified } = useAuth();
@@ -69,74 +45,29 @@ export function HomePage() {
     if (!user) return;
     setLoading(true);
     try {
-      const { data: sharesData } = await supabase
-        .from('expense_shares')
-        .select('expense_id, amount_paise, expenses (id, status, expense_payers (user_id, amount_paise))')
-        .eq('user_id', user.id);
-      const shares = (sharesData ?? []) as unknown as ShareWithExpense[];
+      // Use the server-side RPC that correctly computes balances across multi-payer expenses
+      const { data: balances } = await (supabase as any).rpc('get_friend_balances', { p_user_id: user.id });
+      const rawBalances = (balances ?? []) as { other_user_id: string; net_paise: number }[];
 
-      const { data: settlementsData } = await supabase
-        .from('settlements')
-        .select('payer_id, recipient_id, amount_paise, status')
-        .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
-        .eq('status', 'confirmed');
-      const settlements = (settlementsData ?? []) as unknown as SettlementRow[];
-
-      const pairBalances = new Map<string, number>();
-
-      for (const share of shares) {
-        const expense = share.expenses;
-        if (!expense || expense.status !== 'active') continue;
-        for (const payer of (expense.expense_payers ?? [])) {
-          if (payer.user_id === user.id) continue;
-          const current = pairBalances.get(payer.user_id) ?? 0;
-          pairBalances.set(payer.user_id, current - share.amount_paise);
-        }
+      if (rawBalances.length === 0) {
+        setData({ netPaise: 0, owedToPaise: 0, owingPaise: 0, balanceSummaries: [] });
+        return;
       }
 
-      const { data: myPaidData } = await supabase
-        .from('expense_payers')
-        .select('expense_id, amount_paise, expenses (id, status, expense_shares (user_id, amount_paise))')
-        .eq('user_id', user.id);
-      const myPaidShares = (myPaidData ?? []) as unknown as PaidExpense[];
-
-      for (const pe of myPaidShares) {
-        const expense = pe.expenses;
-        if (!expense || expense.status !== 'active') continue;
-        for (const share of (expense.expense_shares ?? [])) {
-          if (share.user_id === user.id) continue;
-          const current = pairBalances.get(share.user_id) ?? 0;
-          pairBalances.set(share.user_id, current + share.amount_paise);
-        }
-      }
-
-      for (const s of settlements) {
-        if (s.payer_id === user.id) {
-          const current = pairBalances.get(s.recipient_id) ?? 0;
-          pairBalances.set(s.recipient_id, current + s.amount_paise);
-        } else {
-          const current = pairBalances.get(s.payer_id) ?? 0;
-          pairBalances.set(s.payer_id, current - s.amount_paise);
-        }
-      }
-
-      const otherIds = [...pairBalances.keys()];
-      let profiles: Profile[] = [];
-      if (otherIds.length > 0) {
-        const { data: profileData } = await supabase.from('profiles').select('*').in('id', otherIds.slice(0, 10));
-        profiles = (profileData ?? []) as unknown as Profile[];
-      }
+      const otherIds = rawBalances.map(b => b.other_user_id).slice(0, 10);
+      const { data: profileData } = await supabase.from('profiles').select('*').in('id', otherIds);
+      const profiles = (profileData ?? []) as unknown as Profile[];
 
       let owedToPaise = 0;
       let owingPaise = 0;
       const balanceSummaries: FriendBalance[] = [];
 
-      for (const [userId, amount] of pairBalances) {
-        if (Math.abs(amount) < 1) continue;
-        if (amount > 0) owedToPaise += amount;
-        else owingPaise += Math.abs(amount);
-        const prof = profiles.find(p => p.id === userId);
-        if (prof) balanceSummaries.push({ userId, profile: prof, netPaise: amount });
+      for (const b of rawBalances) {
+        if (Math.abs(b.net_paise) < 1) continue;
+        if (b.net_paise > 0) owedToPaise += b.net_paise;
+        else owingPaise += Math.abs(b.net_paise);
+        const prof = profiles.find(p => p.id === b.other_user_id);
+        if (prof) balanceSummaries.push({ userId: b.other_user_id, profile: prof, netPaise: b.net_paise });
       }
 
       balanceSummaries.sort((a, b) => Math.abs(b.netPaise) - Math.abs(a.netPaise));

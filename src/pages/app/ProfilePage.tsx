@@ -12,10 +12,14 @@ import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
 
 const profileSchema = z.object({
-  display_name: z.string().min(1).max(60),
-  username: z.string().min(3).max(30).regex(/^[a-z0-9_]+$/, 'Only lowercase letters, numbers, underscores'),
-  bio: z.string().max(160).optional(),
-  upi_id: z.string().optional(),
+  display_name: z.string().min(1, 'Name is required').max(60, 'Name too long'),
+  username: z.string().min(3, 'Min 3 characters').max(30, 'Max 30 characters').regex(/^[a-z0-9_]+$/, 'Only lowercase letters, numbers, underscores'),
+  bio: z.string().max(160, 'Max 160 characters').optional(),
+  // UPI ID must be name@provider format; empty string is allowed (clears the field)
+  upi_id: z.string().max(50).refine(
+    (v) => v === '' || /^[a-zA-Z0-9._-]+@[a-zA-Z]{2,}$/.test(v),
+    { message: 'Invalid UPI ID (e.g. yourname@upi or 9999999999@paytm)' }
+  ).optional(),
 });
 
 type ProfileForm = z.infer<typeof profileSchema>;
@@ -108,7 +112,8 @@ export function ProfilePage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-secondary mb-1">UPI ID</label>
-              <input {...register('upi_id')} className="input" placeholder="yourname@upi" />
+              <input {...register('upi_id')} className="input" placeholder="yourname@upi" autoComplete="off" />
+              {errors.upi_id && <p className="text-xs text-[rgb(var(--color-negative))] mt-1">{errors.upi_id.message}</p>}
               <p className="text-xs text-muted mt-1">Used for UPI payment links</p>
             </div>
             <button type="submit" className="btn-primary w-full" disabled={saving}>

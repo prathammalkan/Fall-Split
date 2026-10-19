@@ -113,7 +113,10 @@ export function InvitePage() {
             </p>
             {!user ? (
               <button
-                onClick={() => navigate(`/login?redirect=/invite/${token ?? ''}`)}
+                onClick={() => {
+                  const safeToken = /^[a-f0-9-]{32,72}$/.test(token ?? '') ? token : '';
+                  navigate(`/login?redirect=/invite/${safeToken}`);
+                }}
                 className="btn-primary w-full"
               >
                 Sign in to accept

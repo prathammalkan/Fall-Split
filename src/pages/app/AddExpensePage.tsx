@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Minus, X, ChevronDown, Calendar, Tag, StickyNote, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -73,12 +73,7 @@ export function AddExpensePage() {
 
   const totalPaise = parseINR(amountStr) ?? 0;
 
-  useEffect(() => {
-    if (!user || !profile) return;
-    void loadContacts();
-  }, [user, profile, groupIdParam]);
-
-  const loadContacts = async () => {
+  const loadContacts = useCallback(async () => {
     if (!user || !profile) return;
     let profiles: Profile[] = [profile];
 
@@ -108,7 +103,11 @@ export function AddExpensePage() {
     setAvailableProfiles(profiles);
     setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
     setPayers([{ userId: user.id, profile, amountStr: '' }]);
-  };
+  }, [user, profile, groupIdParam]);
+
+  useEffect(() => {
+    void loadContacts();
+  }, [loadContacts]);
 
   const toggleParticipant = (p: Profile) => {
     setParticipants((prev) =>
