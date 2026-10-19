@@ -5,13 +5,13 @@ import { LoadingScreen } from '../../components/ui/LoadingScreen';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 
 /**
- * Auth callback handler for both OAuth (implicit flow) and magic links.
+ * Auth callback handler for OAuth (PKCE) and magic links.
  *
- * Implicit flow: Supabase returns access_token in the URL hash (#access_token=...).
- * detectSessionInUrl: true makes the client parse the hash automatically and emit
- * a SIGNED_IN event. We just wait for that event and then navigate home.
- *
- * Magic links: same mechanism — Supabase puts tokens in the hash.
+ * With flowType: 'pkce' + detectSessionInUrl: true, Supabase automatically
+ * exchanges the ?code= param using the code_verifier stored in localStorage.
+ * This works correctly because signInWithOAuth now uses window.location.origin
+ * as the redirectTo, ensuring the callback returns to the SAME origin where
+ * the code_verifier was stored.
  */
 export function AuthCallbackPage() {
   const navigate = useNavigate();
@@ -27,14 +27,14 @@ export function AuthCallbackPage() {
       return;
     }
 
-    // Check if a session is already established (e.g. hash was parsed synchronously)
+    // Check if Supabase (detectSessionInUrl: true) already exchanged the code
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         navigate('/', { replace: true });
       }
     });
 
-    // Listen for the SIGNED_IN event — fired when Supabase parses the hash tokens
+    // Listen for SIGNED_IN — fired when Supabase auto-exchanges the PKCE code
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session) {
         subscription.unsubscribe();
@@ -42,7 +42,7 @@ export function AuthCallbackPage() {
       }
     });
 
-    // Safety timeout — 12 seconds
+    // Safety timeout
     const timeout = setTimeout(async () => {
       const { data: { session } } = await supabase.auth.getSession();
       subscription.unsubscribe();
