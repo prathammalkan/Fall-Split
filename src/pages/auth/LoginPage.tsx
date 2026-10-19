@@ -28,7 +28,8 @@ export function LoginPage() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [appleLoading, setAppleLoading] = useState(false);
 
-  const redirectTo = searchParams.get('redirect') ?? '/';
+  const rawRedirect = searchParams.get('redirect');
+  const redirectTo = rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/';
 
   const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -45,9 +46,20 @@ export function LoginPage() {
     navigate(redirectTo, { replace: true });
   };
 
+  const saveRedirectForPostAuth = () => {
+    if (redirectTo && redirectTo !== '/') {
+      try {
+        sessionStorage.setItem('post_auth_redirect', redirectTo);
+      } catch {
+        // Ignore storage exceptions in restricted environments
+      }
+    }
+  };
+
   const handleMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!magicEmail) return;
+    saveRedirectForPostAuth();
     setMagicLoading(true);
     setError(null);
     const { error } = await signInWithMagicLink(magicEmail);
@@ -60,6 +72,7 @@ export function LoginPage() {
   };
 
   const handleGoogle = async () => {
+    saveRedirectForPostAuth();
     setGoogleLoading(true);
     setError(null);
     const { error } = await signInWithGoogle();
@@ -71,6 +84,7 @@ export function LoginPage() {
   };
 
   const handleApple = async () => {
+    saveRedirectForPostAuth();
     setAppleLoading(true);
     setError(null);
     const { error } = await signInWithApple();

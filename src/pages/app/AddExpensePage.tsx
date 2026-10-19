@@ -54,6 +54,7 @@ export function AddExpensePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const groupIdParam = searchParams.get('groupId');
+  const friendIdParam = searchParams.get('friendId');
 
   const [step, setStep] = useState<'basic' | 'split'>('basic');
   const [splitMethod, setSplitMethod] = useState<SplitMethod>('equal');
@@ -86,6 +87,8 @@ export function AddExpensePage() {
         .eq('group_id', groupIdParam)
         .is('removed_at', null);
       profiles = (members ?? []).map((m: unknown) => (m as { profiles: Profile }).profiles).filter(Boolean);
+      setAvailableProfiles(profiles);
+      setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
     } else {
       const { data: requestsRaw } = await supabase
         .from('friend_requests')
@@ -94,16 +97,34 @@ export function AddExpensePage() {
         .eq('status', 'accepted');
       const requests = (requestsRaw ?? []) as unknown as FriendRequestRow[];
       const friendIds = requests.map((r) => r.sender_id === user.id ? r.receiver_id : r.sender_id);
-      if (friendIds.length > 0) {
-        const { data } = await supabase.from('profiles').select('*').in('id', friendIds);
+      const allIds = friendIdParam && !friendIds.includes(friendIdParam)
+        ? [...friendIds, friendIdParam]
+        : friendIds;
+
+      if (allIds.length > 0) {
+        const { data } = await supabase.from('profiles').select('*').in('id', allIds);
         profiles = [profile, ...(data ?? []) as unknown as Profile[]];
+      }
+
+      setAvailableProfiles(profiles);
+
+      if (friendIdParam) {
+        const friendProf = profiles.find((p) => p.id === friendIdParam);
+        if (friendProf) {
+          setParticipants([
+            { userId: user.id, profile },
+            { userId: friendProf.id, profile: friendProf },
+          ]);
+        } else {
+          setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
+        }
+      } else {
+        setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
       }
     }
 
-    setAvailableProfiles(profiles);
-    setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
     setPayers([{ userId: user.id, profile, amountStr: '' }]);
-  }, [user, profile, groupIdParam]);
+  }, [user, profile, groupIdParam, friendIdParam]);
 
   useEffect(() => {
     void loadContacts();

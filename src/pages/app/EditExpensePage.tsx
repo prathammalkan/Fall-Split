@@ -45,7 +45,7 @@ export function EditExpensePage() {
     if (!title.trim()) { setError('Enter a title.'); return; }
     setSaving(true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { error: err } = await db.from('expenses').update({ title: title.trim(), amount_paise: newAmount, expense_date: expenseDate, notes: notes || null, category: category || null }).eq('id', expenseId).eq('creator_id', user.id);
+    const { error: err } = await db.from('expenses').update({ title: title.trim(), amount_paise: newAmount, expense_date: expenseDate, notes: notes || null, category: category || null }).eq('id', expenseId).eq('creator_id', user.id).eq('status', 'active');
     setSaving(false);
     if (err) { setError('Failed to save changes.'); return; }
     navigate(`/expenses/${expenseId}`, { replace: true });
