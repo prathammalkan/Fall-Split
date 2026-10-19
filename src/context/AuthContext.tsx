@@ -110,11 +110,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithGoogle = useCallback(async () => {
-    const appUrl = import.meta.env['VITE_APP_URL'] as string || window.location.origin;
+    // Always use the current origin so the callback returns to the same domain
+    // (localhost in dev, Vercel in prod). Using VITE_APP_URL here causes a
+    // cross-origin mismatch that breaks the PKCE/implicit code exchange.
+    const redirectTo = `${window.location.origin}/auth/callback`;
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${appUrl}/auth/callback`,
+        redirectTo,
         queryParams: { access_type: 'offline', prompt: 'consent' },
       },
     });
@@ -122,10 +125,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithApple = useCallback(async () => {
-    const appUrl = import.meta.env['VITE_APP_URL'] as string || window.location.origin;
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'apple',
-      options: { redirectTo: `${appUrl}/auth/callback` },
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
     return { error: error as Error | null };
   }, []);

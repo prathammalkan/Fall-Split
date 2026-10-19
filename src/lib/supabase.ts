@@ -14,12 +14,8 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
-    // implicit flow: tokens arrive in the URL hash — correct for a pure client-side SPA.
-    // PKCE requires server-side cookie storage for the code_verifier; using it in a
-    // Vite SPA causes "code verifier not found" when the OAuth origin differs from
-    // the callback origin (e.g. Vercel → localhost redirect).
     detectSessionInUrl: true,
-    flowType: 'implicit',
+    flowType: 'pkce',
     storage: typeof window !== 'undefined' ? window.localStorage : undefined,
   },
   global: {
