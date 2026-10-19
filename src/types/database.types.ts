@@ -487,6 +487,14 @@ export type Database = {
         Args: { p_user_id: string; p_expense_id: string };
         Returns: boolean;
       };
+      accept_invitation: {
+        Args: { p_token: string };
+        Returns: { success?: boolean; error?: string; type?: string; friendId?: string; groupId?: string };
+      };
+      get_friend_balances: {
+        Args: Record<string, never>;
+        Returns: { other_user_id: string; net_paise: number; owed_to_paise: number; owing_paise: number }[];
+      };
     };
     Enums: {
       friendship_status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'blocked';
