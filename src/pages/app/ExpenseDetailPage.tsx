@@ -84,7 +84,8 @@ export function ExpenseDetailPage() {
     navigate(-1);
   };
 
-  const isCreator = expense?.creator_id === user?.id;
+  // Only allow edit/void if this user created the expense AND it's still active
+  const isCreator = expense?.creator_id === user?.id && expense?.status === 'active';
 
   if (loading) return <div className="flex justify-center py-16"><Spinner size={32} /></div>;
   if (error) return <div className="p-4"><ErrorMessage message={error} /></div>;
@@ -104,8 +105,8 @@ export function ExpenseDetailPage() {
     <div>
       <PageHeader title="Expense" back actions={isCreator ? (
         <>
-          <Link to={`/expenses/${expense.id}/edit`} className="btn-ghost p-2 rounded-full"><Edit3 size={18} /></Link>
-          <button onClick={() => setShowDeleteConfirm(true)} className="btn-ghost p-2 rounded-full text-[rgb(var(--color-negative))]"><Trash2 size={18} /></button>
+          <Link to={`/expenses/${expense.id}/edit`} className="btn-ghost p-2 rounded-full" aria-label="Edit expense"><Edit3 size={18} /></Link>
+          <button onClick={() => setShowDeleteConfirm(true)} className="btn-ghost p-2 rounded-full text-[rgb(var(--color-negative))]" aria-label="Delete expense"><Trash2 size={18} /></button>
         </>
       ) : null} />
 

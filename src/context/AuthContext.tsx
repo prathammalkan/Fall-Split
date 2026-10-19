@@ -50,7 +50,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .single();
 
     if (error) {
-      console.error('[AuthContext] Failed to fetch profile:', error.message);
+      if (import.meta.env.DEV) {
+        console.error('[AuthContext] Failed to fetch profile:', error.message);
+      }
       return null;
     }
     return data;
@@ -98,11 +100,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithMagicLink = useCallback(async (email: string) => {
-    const appUrl = import.meta.env['VITE_APP_URL'] as string || window.location.origin;
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${appUrl}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
         shouldCreateUser: true,
       },
     });
@@ -133,12 +134,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUp = useCallback(async (email: string, password: string, displayName: string) => {
-    const appUrl = import.meta.env['VITE_APP_URL'] as string || window.location.origin;
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: `${appUrl}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
         data: { full_name: displayName },
       },
     });
@@ -151,9 +151,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resetPassword = useCallback(async (email: string) => {
-    const appUrl = import.meta.env['VITE_APP_URL'] as string || window.location.origin;
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${appUrl}/auth/reset-password`,
+      redirectTo: `${window.location.origin}/reset-password`,
     });
     return { error: error as Error | null };
   }, []);
