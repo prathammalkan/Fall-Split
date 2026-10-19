@@ -57,15 +57,6 @@ export default defineConfig({
             purpose: 'maskable',
           },
         ],
-        screenshots: [
-          {
-            src: '/screenshots/mobile.png',
-            sizes: '390x844',
-            type: 'image/png',
-            form_factor: 'narrow',
-            label: 'Fall Split Home Screen',
-          },
-        ],
       },
       devOptions: {
         enabled: false,
