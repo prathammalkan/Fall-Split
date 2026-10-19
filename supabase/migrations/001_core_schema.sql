@@ -56,12 +56,12 @@ CREATE TABLE public.friend_requests (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-  CONSTRAINT no_self_friend CHECK (sender_id <> receiver_id),
-  CONSTRAINT unique_friendship UNIQUE (
-    LEAST(sender_id, receiver_id),
-    GREATEST(sender_id, receiver_id)
-  )
+  CONSTRAINT no_self_friend CHECK (sender_id <> receiver_id)
 );
+
+-- Expression-based unique index ensures no duplicate pair regardless of direction
+CREATE UNIQUE INDEX idx_unique_friendship
+  ON public.friend_requests (LEAST(sender_id::text, receiver_id::text), GREATEST(sender_id::text, receiver_id::text));
 
 CREATE INDEX idx_friend_requests_sender   ON public.friend_requests (sender_id);
 CREATE INDEX idx_friend_requests_receiver ON public.friend_requests (receiver_id);
