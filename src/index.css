@@ -1,0 +1,257 @@
+/* Fall Split — Global Styles */
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* Light mode */
+    --color-bg: 255 255 255;
+    --color-bg-secondary: 248 248 248;
+    --color-bg-tertiary: 240 240 240;
+    --color-border: 229 229 229;
+    --color-text-primary: 15 15 15;
+    --color-text-secondary: 107 107 107;
+    --color-text-muted: 163 163 163;
+    --color-accent: 249 115 22;    /* orange-500 */
+    --color-positive: 22 163 74;   /* green-600 */
+    --color-negative: 220 38 38;   /* red-600 */
+    --color-pending: 217 119 6;    /* amber-600 */
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-bg: 10 10 10;
+      --color-bg-secondary: 18 18 18;
+      --color-bg-tertiary: 28 28 28;
+      --color-border: 38 38 38;
+      --color-text-primary: 245 245 245;
+      --color-text-secondary: 163 163 163;
+      --color-text-muted: 107 107 107;
+      --color-accent: 249 115 22;
+      --color-positive: 34 197 94;   /* green-500 */
+      --color-negative: 239 68 68;   /* red-500 */
+      --color-pending: 245 158 11;   /* amber-500 */
+    }
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply text-[rgb(var(--color-text-primary))] bg-[rgb(var(--color-bg))];
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* iOS safe area support */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Focus styles */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-orange-500 rounded-sm;
+  }
+
+  /* Selection */
+  ::selection {
+    background-color: rgb(249 115 22 / 0.2);
+  }
+}
+
+@layer components {
+  /* App shell */
+  .app-shell {
+    @apply min-h-screen flex flex-col;
+    max-width: 768px;
+    margin: 0 auto;
+    width: 100%;
+  }
+
+  /* Bottom nav */
+  .bottom-nav {
+    @apply fixed bottom-0 left-0 right-0 z-40;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: rgb(var(--color-bg));
+    border-top: 1px solid rgb(var(--color-border));
+  }
+
+  /* Page padding accounting for bottom nav */
+  .page-content {
+    @apply pb-24 pt-4 px-4;
+  }
+
+  /* Financial amounts */
+  .amount-positive {
+    color: rgb(var(--color-positive));
+    @apply font-semibold tabular-nums;
+  }
+  .amount-negative {
+    color: rgb(var(--color-negative));
+    @apply font-semibold tabular-nums;
+  }
+  .amount-neutral {
+    color: rgb(var(--color-text-secondary));
+    @apply font-medium tabular-nums;
+  }
+
+  /* Cards */
+  .card {
+    @apply rounded-xl p-4;
+    background: rgb(var(--color-bg-secondary));
+    border: 1px solid rgb(var(--color-border));
+  }
+
+  /* Input fields */
+  .input {
+    @apply w-full rounded-lg px-3 py-2.5 text-sm transition-colors;
+    background: rgb(var(--color-bg-secondary));
+    border: 1px solid rgb(var(--color-border));
+    color: rgb(var(--color-text-primary));
+    outline: none;
+  }
+  .input:focus {
+    border-color: rgb(var(--color-accent));
+    box-shadow: 0 0 0 2px rgb(var(--color-accent) / 0.15);
+  }
+  .input::placeholder {
+    color: rgb(var(--color-text-muted));
+  }
+
+  /* Buttons */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold;
+    @apply transition-all duration-100 active:scale-95;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+    background: rgb(var(--color-accent));
+    color: white;
+    min-height: 44px;
+  }
+  .btn-primary:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium;
+    @apply transition-all duration-100 active:scale-95;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    background: rgb(var(--color-bg-tertiary));
+    color: rgb(var(--color-text-primary));
+    border: 1px solid rgb(var(--color-border));
+    min-height: 44px;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium;
+    @apply transition-colors duration-100;
+    @apply disabled:opacity-50;
+    color: rgb(var(--color-text-secondary));
+    min-height: 44px;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: rgb(var(--color-bg-tertiary));
+    color: rgb(var(--color-text-primary));
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold;
+    @apply transition-all duration-100 active:scale-95;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    background: rgb(var(--color-negative));
+    color: white;
+    min-height: 44px;
+  }
+
+  /* Divider */
+  .divider {
+    border-color: rgb(var(--color-border));
+  }
+
+  /* Section header */
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-wider;
+    color: rgb(var(--color-text-muted));
+  }
+
+  /* Status badge */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-positive {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+    background: rgb(var(--color-positive) / 0.1);
+    color: rgb(var(--color-positive));
+  }
+  .badge-negative {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+    background: rgb(var(--color-negative) / 0.1);
+    color: rgb(var(--color-negative));
+  }
+  .badge-pending {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+    background: rgb(var(--color-pending) / 0.1);
+    color: rgb(var(--color-pending));
+  }
+  .badge-neutral {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+    background: rgb(var(--color-text-muted) / 0.15);
+    color: rgb(var(--color-text-secondary));
+  }
+
+  /* Loading skeleton */
+  .skeleton {
+    @apply animate-pulse rounded;
+    background: rgb(var(--color-bg-tertiary));
+  }
+
+  /* List item */
+  .list-item {
+    @apply flex items-center gap-3 px-4 py-3 cursor-pointer;
+    @apply transition-colors duration-100;
+    border-bottom: 1px solid rgb(var(--color-border));
+  }
+  .list-item:hover {
+    background: rgb(var(--color-bg-secondary));
+  }
+  .list-item:last-child {
+    border-bottom: none;
+  }
+
+  /* Avatar */
+  .avatar {
+    @apply rounded-full object-cover flex-shrink-0;
+    background: rgb(var(--color-bg-tertiary));
+  }
+
+  /* Logo */
+  .logo-text {
+    @apply font-black tracking-tight;
+    color: rgb(var(--color-text-primary));
+  }
+  .logo-accent {
+    color: rgb(var(--color-accent));
+  }
+}
+
+@layer utilities {
+  .text-primary { color: rgb(var(--color-text-primary)); }
+  .text-secondary { color: rgb(var(--color-text-secondary)); }
+  .text-muted { color: rgb(var(--color-text-muted)); }
+  .bg-app { background: rgb(var(--color-bg)); }
+  .bg-secondary { background: rgb(var(--color-bg-secondary)); }
+  .bg-tertiary { background: rgb(var(--color-bg-tertiary)); }
+  .border-app { border-color: rgb(var(--color-border)); }
+  .accent { color: rgb(var(--color-accent)); }
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+}
