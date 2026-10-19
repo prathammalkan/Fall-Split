@@ -14,7 +14,10 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: true,
+    // Set to false so AuthCallbackPage explicitly controls the PKCE code exchange.
+    // When true, the client races to consume the code_verifier from storage before
+    // our callback page can call exchangeCodeForSession — causing a timeout.
+    detectSessionInUrl: false,
     flowType: 'pkce',
     storage: typeof window !== 'undefined' ? window.localStorage : undefined,
   },
