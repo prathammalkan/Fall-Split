@@ -46,7 +46,7 @@ export function HomePage() {
     setLoading(true);
     try {
       // Use the server-side RPC that correctly computes balances across multi-payer expenses
-      const { data: balances } = await (supabase as any).rpc('get_friend_balances', { p_user_id: user.id });
+      const { data: balances } = await supabase.rpc('get_friend_balances');
       const rawBalances = (balances ?? []) as { other_user_id: string; net_paise: number }[];
 
       if (rawBalances.length === 0) {

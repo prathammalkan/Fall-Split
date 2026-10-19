@@ -23,7 +23,7 @@ export default defineConfig({
           },
         ],
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api/, /^\/rest/, /^\/auth/],
+        navigateFallbackDenylist: [/^\/api/, /^\/rest/],
         cleanupOutdatedCaches: true,
         skipWaiting: true,
         clientsClaim: true,

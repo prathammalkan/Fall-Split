@@ -27,10 +27,25 @@ export function AuthCallbackPage() {
       return;
     }
 
+    const getDestination = (): string => {
+      try {
+        const stored = sessionStorage.getItem('post_auth_redirect');
+        if (stored) {
+          sessionStorage.removeItem('post_auth_redirect');
+          if (stored.startsWith('/') && !stored.startsWith('//')) {
+            return stored;
+          }
+        }
+      } catch {
+        // Fall back to default
+      }
+      return '/';
+    };
+
     // Check if Supabase (detectSessionInUrl: true) already exchanged the code
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        navigate('/', { replace: true });
+        navigate(getDestination(), { replace: true });
       }
     });
 
@@ -38,7 +53,7 @@ export function AuthCallbackPage() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session) {
         subscription.unsubscribe();
-        navigate('/', { replace: true });
+        navigate(getDestination(), { replace: true });
       }
     });
 
@@ -47,7 +62,7 @@ export function AuthCallbackPage() {
       const { data: { session } } = await supabase.auth.getSession();
       subscription.unsubscribe();
       if (session) {
-        navigate('/', { replace: true });
+        navigate(getDestination(), { replace: true });
       } else {
         setError('Sign-in timed out. Please try again.');
       }

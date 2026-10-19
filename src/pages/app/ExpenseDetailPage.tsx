@@ -165,7 +165,7 @@ export function ExpenseDetailPage() {
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-semibold tabular-nums text-primary">{formatINR(s.amount_paise)}</p>
-                    {isPayer && <p className={`text-xs tabular-nums ${netPaise <= 0 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>net {netPaise <= 0 ? '+' : ''}{formatINR(Math.abs(netPaise))}</p>}
+                    {isPayer && <p className={`text-xs tabular-nums ${netPaise <= 0 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>net {netPaise <= 0 ? '+' : '-'}{formatINR(Math.abs(netPaise))}</p>}
                   </div>
                 </div>
               );

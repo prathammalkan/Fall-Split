@@ -35,7 +35,20 @@ export function FriendDetailPage() {
       if (err || !data) { setError('User not found.'); return; }
       setFriendProfile(data);
 
-      // Calculate net balance with this friend
+      // Try the server-side RPC first for exact multi-payer balance reconciliation
+      try {
+        const { data: balances, error: rpcErr } = await supabase.rpc('get_friend_balances');
+        if (!rpcErr && balances) {
+          const rawBalances = balances as { other_user_id: string; net_paise: number }[];
+          const friendBal = rawBalances.find(b => b.other_user_id === friendId);
+          setNetPaise(friendBal ? Number(friendBal.net_paise) : 0);
+          return;
+        }
+      } catch {
+        // Fall back to direct ledger query below
+      }
+
+      // Fallback: calculate net balance with this friend directly
       const [{ data: shares }, { data: paid }, { data: settlements }] = await Promise.all([
         supabase.from('expense_shares').select('expense_id, amount_paise, expenses (id, status, expense_payers (user_id, amount_paise))').eq('user_id', user.id),
         supabase.from('expense_payers').select('expense_id, amount_paise, expenses (id, status, expense_shares (user_id, amount_paise))').eq('user_id', user.id),
