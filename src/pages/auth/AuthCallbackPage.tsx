@@ -10,51 +10,74 @@ export function AuthCallbackPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const errorParam = searchParams.get('error');
-    const errorDescription = searchParams.get('error_description');
+    const handleCallback = async () => {
+      const errorParam = searchParams.get('error');
+      const errorDescription = searchParams.get('error_description');
+      const code = searchParams.get('code');
 
-    // Surface any OAuth error returned by the provider
-    if (errorParam) {
-      setError(errorDescription ?? 'Authentication failed. Please try again.');
-      return;
-    }
-
-    // Supabase client (with detectSessionInUrl: true + flowType: 'pkce') automatically
-    // exchanges the ?code= for a session when it sees it in the URL.
-    // We just need to wait for the AUTH_CODE_EXCHANGED / SIGNED_IN event.
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) {
-        navigate('/', { replace: true });
-      } else if (event === 'TOKEN_REFRESHED' && session) {
-        navigate('/', { replace: true });
-      }
-    });
-
-    // Fallback: if a session already exists (e.g. the code was exchanged synchronously
-    // before our listener was attached), navigate immediately.
-    supabase.auth.getSession().then(({ data: { session }, error: sessionError }) => {
-      if (sessionError) {
-        setError('Failed to complete sign-in. Please try again.');
+      // Provider-level error (e.g. user denied)
+      if (errorParam) {
+        setError(errorDescription ?? 'Authentication failed. Please try again.');
         return;
       }
-      if (session) {
-        navigate('/', { replace: true });
-      }
-    });
 
-    // Safety timeout — if nothing resolves in 10 s, show an error
-    const timeout = setTimeout(() => {
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (!session) {
-          setError('Sign-in timed out. Please try again.');
+      // Step 1: check if Supabase already exchanged the code automatically
+      const { data: { session: existingSession } } = await supabase.auth.getSession();
+      if (existingSession) {
+        navigate('/', { replace: true });
+        return;
+      }
+
+      // Step 2: exchange manually (PKCE — code_verifier is in localStorage)
+      if (code) {
+        const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+
+        if (exchangeError) {
+          // If code was already consumed (double-call), check for a session one more time
+          if (
+            exchangeError.message?.includes('already') ||
+            exchangeError.message?.includes('expired') ||
+            exchangeError.message?.includes('invalid')
+          ) {
+            const { data: { session: retrySession } } = await supabase.auth.getSession();
+            if (retrySession) {
+              navigate('/', { replace: true });
+              return;
+            }
+          }
+          console.error('[AuthCallback] exchangeCodeForSession error:', exchangeError);
+          setError(`Sign-in failed: ${exchangeError.message}. Please try again.`);
+          return;
+        }
+
+        if (data.session) {
+          navigate('/', { replace: true });
+          return;
+        }
+      }
+
+      // Step 3: no code in URL — wait for auth state change (e.g. magic link hash)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session) {
+          subscription.unsubscribe();
+          navigate('/', { replace: true });
         }
       });
-    }, 10_000);
 
-    return () => {
-      subscription.unsubscribe();
-      clearTimeout(timeout);
+      // Final timeout fallback
+      setTimeout(async () => {
+        const { data: { session: finalSession } } = await supabase.auth.getSession();
+        if (finalSession) {
+          subscription.unsubscribe();
+          navigate('/', { replace: true });
+        } else {
+          subscription.unsubscribe();
+          setError('Sign-in timed out. Please try again.');
+        }
+      }, 8_000);
     };
+
+    void handleCallback();
   }, [navigate, searchParams]);
 
   if (error) {
