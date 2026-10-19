@@ -8,6 +8,7 @@ import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Spinner } from '../../components/ui/Spinner';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
+import { ShareInviteModal } from '../../components/ui/ShareInviteModal';
 import type { Profile } from '../../types';
 
 interface FriendWithBalance {
@@ -40,6 +41,7 @@ export function FriendsPage() {
   const [searchResults, setSearchResults] = useState<Profile[]>([]);
   const [searching, setSearching] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -142,9 +144,9 @@ export function FriendsPage() {
   return (
     <div>
       <PageHeader title="Friends" actions={
-        <Link to="/search" className="btn-ghost p-2 rounded-full" aria-label="Search users">
+        <button onClick={() => setShowInviteModal(true)} className="btn-ghost p-2 rounded-full" aria-label="Invite friends">
           <Share2 size={20} />
-        </Link>
+        </button>
       } />
       <div className="page-content pt-4">
         {actionError && <ErrorMessage message={actionError} />}
@@ -213,7 +215,7 @@ export function FriendsPage() {
           <div className="flex justify-center py-8"><Spinner size={24} /></div>
         ) : friends.length === 0 && pending.length === 0 ? (
           <EmptyState icon={Users} title="No friends yet" description="Search for friends by username or share your invite link"
-            action={<button className="btn-primary" onClick={() => void navigator.share?.({ title: 'Fall Split', url: window.location.origin })}>Invite friends</button>}
+            action={<button className="btn-primary" onClick={() => setShowInviteModal(true)}>Invite friends</button>}
           />
         ) : (
           <div>
@@ -237,6 +239,7 @@ export function FriendsPage() {
           </div>
         )}
       </div>
+      {showInviteModal && <ShareInviteModal onClose={() => setShowInviteModal(false)} />}
     </div>
   );
 }

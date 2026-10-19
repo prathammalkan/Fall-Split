@@ -91,7 +91,7 @@ export function SettlementsPage() {
   return (
     <div>
       <PageHeader title="Settlements" back actions={
-        <button onClick={() => navigate('/settlements/new')} className="btn-ghost p-2 rounded-full" aria-label="New settlement">
+        <button onClick={() => navigate('/friends')} className="btn-ghost p-2 rounded-full" aria-label="Settle with friend">
           <Plus size={20} />
         </button>
       } />
