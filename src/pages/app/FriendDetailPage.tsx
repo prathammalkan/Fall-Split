@@ -121,6 +121,20 @@ export function FriendDetailPage() {
     const payerId = user.id;
     const recipientId = friendId;
 
+    // Guard: check for an existing pending/proposed settlement between the pair
+    const { data: existing } = await supabase
+      .from('settlements')
+      .select('id')
+      .eq('payer_id', payerId)
+      .eq('recipient_id', recipientId)
+      .in('status', ['proposed', 'pending'])
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      setSettleError('You already have a pending settlement proposal with this person. Cancel it from the Settlements page before creating a new one.');
+      return;
+    }
+
     setSettling(true);
     const { error: insErr } = await db.from('settlements').insert({
       payer_id: payerId,

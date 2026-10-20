@@ -16,8 +16,9 @@ const profileSchema = z.object({
   username: z.string().min(3, 'Min 3 characters').max(30, 'Max 30 characters').regex(/^[a-z0-9_]+$/, 'Only lowercase letters, numbers, underscores'),
   bio: z.string().max(160, 'Max 160 characters').optional(),
   // UPI ID must be name@provider format; empty string is allowed (clears the field)
+  // Regex aligned with DB constraint: ^[a-zA-Z0-9._\-]+@[a-zA-Z0-9]+$
   upi_id: z.string().max(50).refine(
-    (v) => v === '' || /^[a-zA-Z0-9._-]+@[a-zA-Z]{2,}$/.test(v),
+    (v) => v === '' || /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(v),
     { message: 'Invalid UPI ID (e.g. yourname@upi or 9999999999@paytm)' }
   ).optional(),
 });

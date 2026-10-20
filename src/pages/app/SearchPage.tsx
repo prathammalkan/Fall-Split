@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search } from 'lucide-react';
+import { Search, UserPlus, Check } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { supabase } from '../../lib/supabase';
+import { supabase, db } from '../../lib/supabase';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
@@ -15,6 +15,9 @@ export function SearchPage() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<PublicProfile[]>([]);
   const [searching, setSearching] = useState(false);
+  const [sending, setSending] = useState<string | null>(null);
+  const [sent, setSent] = useState<Set<string>>(new Set());
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const search = useCallback(async (q: string) => {
     if (!q.trim() || q.length < 2) { setResults([]); return; }
@@ -40,6 +43,22 @@ export function SearchPage() {
     return () => clearTimeout(t);
   }, [query, search]);
 
+  const sendRequest = async (receiverId: string) => {
+    if (!user) return;
+    setActionError(null);
+    setSending(receiverId);
+    try {
+      const { error } = await db.from('friend_requests').insert({ sender_id: user.id, receiver_id: receiverId });
+      if (error) {
+        setActionError('Could not send request. You may already have a connection with this person.');
+        return;
+      }
+      setSent((prev) => new Set(prev).add(receiverId));
+    } finally {
+      setSending(null);
+    }
+  };
+
   return (
     <div>
       <PageHeader title="Search users" back />
@@ -58,6 +77,11 @@ export function SearchPage() {
           />
           {searching && <div className="absolute right-3 top-1/2 -translate-y-1/2"><Spinner size={16} /></div>}
         </div>
+
+        {actionError && (
+          <p className="text-xs text-[rgb(var(--color-negative))] mb-3 px-1">{actionError}</p>
+        )}
+
         {results.length > 0 && (
           <div className="card p-0 overflow-hidden">
             {results.map((p) => (
@@ -67,6 +91,21 @@ export function SearchPage() {
                   <p className="text-sm font-medium text-primary">{p.display_name}</p>
                   <p className="text-xs text-muted">@{p.username}</p>
                 </div>
+                {sent.has(p.id) ? (
+                  <span className="flex items-center gap-1 text-xs text-[rgb(var(--color-positive))] font-medium">
+                    <Check size={14} /> Sent
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => void sendRequest(p.id)}
+                    disabled={sending === p.id}
+                    className="btn-secondary py-1.5 px-3 text-xs flex items-center gap-1"
+                    aria-label={`Send friend request to ${p.display_name}`}
+                  >
+                    {sending === p.id ? <Spinner size={12} /> : <UserPlus size={14} />}
+                    Add
+                  </button>
+                )}
               </div>
             ))}
           </div>
