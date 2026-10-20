@@ -94,6 +94,7 @@ export type Database = {
           type: 'trip' | 'household' | 'event' | 'custom';
           currency: string;
           creator_id: string;
+          avatar_url: string | null;
           archived_at: string | null;
           created_at: string;
           updated_at: string;
@@ -105,6 +106,7 @@ export type Database = {
           type?: 'trip' | 'household' | 'event' | 'custom';
           currency?: string;
           creator_id: string;
+          avatar_url?: string | null;
           archived_at?: string | null;
         };
         Update: {
@@ -112,6 +114,7 @@ export type Database = {
           description?: string | null;
           type?: 'trip' | 'household' | 'event' | 'custom';
           currency?: string;
+          avatar_url?: string | null;
           archived_at?: string | null;
           updated_at?: string;
         };
@@ -219,6 +222,8 @@ export type Database = {
           amount_paise: number;
           share_weight: number | null;
           percentage: number | null;
+          created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: string;
@@ -232,6 +237,7 @@ export type Database = {
           amount_paise?: number;
           share_weight?: number | null;
           percentage?: number | null;
+          updated_at?: string;
         };
       };
       expense_items: {
@@ -244,6 +250,7 @@ export type Database = {
           total_paise: number;
           item_type: string;
           sort_order: number;
+          created_at: string;
         };
         Insert: {
           id?: string;
