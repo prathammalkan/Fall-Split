@@ -190,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
@@ -197,6 +198,7 @@ export function useAuth(): AuthContextValue {
 }
 
 /** Guard: returns true only if the user is authenticated AND email-verified */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useRequireVerified(): { ready: boolean; loading: boolean } {
   const { session, emailVerified, loading } = useAuth();
   return {

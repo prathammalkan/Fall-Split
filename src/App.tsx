@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import { AppShell } from './components/layout/AppShell';
+import { ErrorBoundary } from './components/ui/ErrorBoundary';
 
 // Auth pages
 import { LoginPage } from './pages/auth/LoginPage';
@@ -36,21 +37,24 @@ export default function App() {
 
   if (!session) {
     return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
-        <Route path="/verify-email" element={<VerifyEmailPage />} />
-        <Route path="/auth/callback" element={<AuthCallbackPage />} />
-        <Route path="/invite/:token" element={<InvitePage />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/auth/callback" element={<AuthCallbackPage />} />
+          <Route path="/invite/:token" element={<InvitePage />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </ErrorBoundary>
     );
   }
 
   return (
-    <AppShell>
+    <ErrorBoundary>
+      <AppShell>
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/friends" element={<FriendsPage />} />
@@ -72,5 +76,6 @@ export default function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppShell>
+    </ErrorBoundary>
   );
 }

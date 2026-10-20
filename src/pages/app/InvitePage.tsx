@@ -28,9 +28,6 @@ export function InvitePage() {
   const [accepting, setAccepting] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void loadInvite(); }, [token]);
-
   const loadInvite = async () => {
     if (!token) { setError('Invalid invitation link.'); setLoading(false); return; }
     const { data: rawData, error: err } = await supabase
@@ -50,6 +47,9 @@ export function InvitePage() {
     setInviteType(data.type);
     setLoading(false);
   };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadInvite(); }, [token]);
 
   const acceptInvite = async () => {
     if (!user || !token) return;
@@ -114,7 +114,8 @@ export function InvitePage() {
             {!user ? (
               <button
                 onClick={() => {
-                  const safeToken = /^[a-f0-9-]{32,72}$/.test(token ?? '') ? token : '';
+                  // Accept hex tokens (client-generated) and base64url tokens (server-generated)
+                  const safeToken = /^[a-zA-Z0-9_-]{16,128}$/.test(token ?? '') ? token : '';
                   navigate(`/login?redirect=/invite/${safeToken}`);
                 }}
                 className="btn-primary w-full"

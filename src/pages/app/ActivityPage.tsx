@@ -64,6 +64,9 @@ export function ActivityPage() {
       const paidExpenses = (paidExpensesRaw ?? []) as unknown as ExpenseJoinRow[];
       const shareExpenses = (shareExpensesRaw ?? []) as unknown as ExpenseJoinRow[];
 
+      // Build set of expenses where user is a payer (positive — they covered money)
+      const paidExpenseIds = new Set<string>(paidExpenses.map(r => r.expense_id));
+
       const expenseIds = new Set<string>();
       for (const row of [...paidExpenses, ...shareExpenses]) {
         const exp = row.expenses;
@@ -75,7 +78,9 @@ export function ActivityPage() {
           title: exp.title,
           amountPaise: exp.amount_paise,
           date: exp.expense_date,
-          isPositive: false,
+          // Positive (green) = user paid for this expense (covered costs for others)
+          // Negative (red) = user only owes a share but didn't pay
+          isPositive: paidExpenseIds.has(exp.id),
           link: `/expenses/${exp.id}`,
         });
       }
