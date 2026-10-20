@@ -125,7 +125,7 @@ export function ActivityPage() {
       i.date.substring(0, 10),
       i.type,
       // Escape for CSV injection
-      `"${i.title.replace(/["|=+@-]/g, (c) => `'${c}`).replace(/"/g, '""')}"`,
+      `"${i.title.replace(/[-"|=+@]/g, (c) => `'${c}`).replace(/"/g, '""')}"`,
       (i.amountPaise / 100).toFixed(2),
     ]);
     const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');

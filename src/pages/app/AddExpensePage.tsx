@@ -230,7 +230,7 @@ export function AddExpensePage() {
 
       if (expError || !expense) { setError(expError?.message ?? 'Failed to create expense.'); return; }
 
-      await Promise.all([
+      const [payersResult, sharesResult] = await Promise.all([
         db.from('expense_payers').insert(payerAmounts.map((p: { userId: string; amountPaise: number }) => ({ expense_id: expense.id, user_id: p.userId, amount_paise: p.amountPaise }))),
         db.from('expense_shares').insert(allocations.map((a: { userId: string; amountPaise: number }) => ({
           expense_id: expense.id, user_id: a.userId, amount_paise: a.amountPaise,
@@ -238,6 +238,13 @@ export function AddExpensePage() {
           share_weight: splitMethod === 'shares' ? participants.find((p) => p.userId === a.userId)?.shares ?? null : null,
         }))),
       ]);
+
+      if (payersResult.error || sharesResult.error) {
+        // Void the orphaned expense header so it doesn't corrupt balances
+        await db.from('expenses').update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: user.id, void_reason: 'Payers/shares insert failed' }).eq('id', expense.id);
+        setError(payersResult.error?.message ?? sharesResult.error?.message ?? 'Failed to save expense participants. Please try again.');
+        return;
+      }
 
       if (splitMethod === 'itemized') {
         for (const item of lineItems.filter((i) => i.name && parseINR(i.unitPriceStr))) {

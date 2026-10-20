@@ -154,7 +154,9 @@ export function ExpenseDetailPage() {
             {shares.map((s) => {
               const isPayer = payers.some((p) => p.user_id === s.user_id);
               const payerAmt = payers.find((p) => p.user_id === s.user_id)?.amount_paise ?? 0;
-              const netPaise = isPayer ? s.amount_paise - payerAmt : s.amount_paise;
+              // netPaise > 0 means payer covered more than their own share (they are owed)
+              // netPaise < 0 means they owe someone else
+              const netPaise = isPayer ? payerAmt - s.amount_paise : -s.amount_paise;
               return (
                 <div key={s.user_id} className="list-item">
                   <Avatar src={s.profile?.avatar_url ?? null} name={s.profile?.display_name ?? 'Unknown'} size={32} />
@@ -165,7 +167,7 @@ export function ExpenseDetailPage() {
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-semibold tabular-nums text-primary">{formatINR(s.amount_paise)}</p>
-                    {isPayer && <p className={`text-xs tabular-nums ${netPaise <= 0 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>net {netPaise <= 0 ? '+' : '-'}{formatINR(Math.abs(netPaise))}</p>}
+                    {isPayer && netPaise !== 0 && <p className={`text-xs tabular-nums ${netPaise > 0 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>net {netPaise > 0 ? '+' : ''}{formatINR(netPaise)}</p>}
                   </div>
                 </div>
               );

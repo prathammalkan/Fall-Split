@@ -132,12 +132,17 @@ export function EditExpensePage() {
         }
 
         // Delete old shares and payers, then reinsert
-        await Promise.all([
+        const [delSharesErr, delPayersErr] = await Promise.all([
           db.from('expense_shares').delete().eq('expense_id', expenseId),
           db.from('expense_payers').delete().eq('expense_id', expenseId),
-        ]);
+        ]).then(([s, p]) => [s.error, p.error]);
 
-        await Promise.all([
+        if (delSharesErr || delPayersErr) {
+          setError('Failed to update expense shares. Please try again.');
+          return;
+        }
+
+        const [newSharesResult, newPayersResult] = await Promise.all([
           db.from('expense_shares').insert(
             newShares.map(s => ({ expense_id: expenseId, user_id: s.userId, amount_paise: s.amountPaise }))
           ),
@@ -145,6 +150,13 @@ export function EditExpensePage() {
             newPayers.map(p => ({ expense_id: expenseId, user_id: p.user_id, amount_paise: p.amount_paise }))
           ),
         ]);
+
+        if (newSharesResult.error || newPayersResult.error) {
+          setError('Failed to save updated participant shares. The expense amount was reverted. Please try again.');
+          // Revert the expense header amount to original to keep consistency
+          await db.from('expenses').update({ amount_paise: original.amount_paise }).eq('id', expenseId).eq('creator_id', user.id);
+          return;
+        }
       }
 
       navigate(`/expenses/${expenseId}`, { replace: true });
