@@ -24,13 +24,11 @@ export function NotificationsPage() {
 
   const markAllRead = async () => {
     if (!user) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await db.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', user.id).is('read_at', null);
     void load();
   };
 
   const markRead = async (id: string) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await db.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id).is('read_at', null);
     setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, read_at: new Date().toISOString() } : n));
   };

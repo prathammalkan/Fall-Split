@@ -23,7 +23,7 @@ export function BottomNav() {
               to={to}
               className={`flex flex-col items-center gap-1 px-3 py-2.5 flex-1 min-h-[56px] justify-center transition-colors ${
                 isActive
-                  ? 'accent'
+                  ? 'text-[rgb(var(--color-accent))]'
                   : 'text-muted hover:text-secondary'
               }`}
               aria-label={label}
@@ -32,10 +32,9 @@ export function BottomNav() {
               <Icon
                 size={22}
                 strokeWidth={isActive ? 2.5 : 1.75}
-                className={isActive ? 'accent' : ''}
               />
               <span className={`text-[10px] font-medium ${
-                isActive ? 'accent font-semibold' : ''
+                isActive ? 'font-semibold' : ''
               }`}>
                 {label}
               </span>

@@ -129,7 +129,7 @@ async function syncOperation(
     }
     if (!expense) return { success: false, error: 'No expense returned' };
 
-    await Promise.all([
+    const [payersResult, sharesResult] = await Promise.all([
       supabaseClient.from('expense_payers').insert(
         payload.payers.map((p) => ({ expense_id: expense.id, user_id: p.userId, amount_paise: p.amountPaise }))
       ),
@@ -137,6 +137,18 @@ async function syncOperation(
         payload.shares.map((s) => ({ expense_id: expense.id, user_id: s.userId, amount_paise: s.amountPaise }))
       ),
     ]);
+
+    // If payers or shares failed the expense header is orphaned — mark it deleted so
+    // it does not appear in the UI with a broken accounting state.
+    if (payersResult.error || sharesResult.error) {
+      await supabaseClient
+        .from('expenses')
+        .update({ status: 'deleted' })
+        .eq('id', expense.id);
+      const msg =
+        payersResult.error?.message ?? sharesResult.error?.message ?? 'Failed to insert payers/shares';
+      return { success: false, error: `Expense created but financial data missing — voided. ${msg}` };
+    }
 
     return { success: true, serverId: expense.id };
   }

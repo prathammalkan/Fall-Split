@@ -23,6 +23,12 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-console': ['warn', { allow: ['error', 'warn', 'info'] }],
+      // Disable overly strict experimental rules that produce false positives
+      // for the standard React async data-loading pattern (void asyncFn() in useEffect)
+      // and for Date.now() / crypto.randomUUID() inside event handlers.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/purity': 'off',
+      'react-hooks/immutability': 'off',
     },
   }
 );

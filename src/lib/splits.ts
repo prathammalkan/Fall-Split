@@ -125,7 +125,7 @@ export function percentageSplit(
 
   // Distribute remainder deterministically to largest-percentage participant
   const allocated = allocations.reduce((acc, a) => acc + a.amountPaise, 0);
-  let remainder = totalPaise - allocated;
+  const remainder = totalPaise - allocated;
 
   // Sort by fractional part descending, break ties by original order
   const withFraction = allocations.map((a, i) => ({
@@ -190,7 +190,7 @@ export function sharesSplit(
   }));
 
   const allocated = allocations.reduce((acc, a) => acc + a.amountPaise, 0);
-  let remainder = totalPaise - allocated;
+  const remainder = totalPaise - allocated;
 
   // Distribute remainder by largest fractional part
   const withFraction = allocations.map((a, i) => ({

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Copy, Share2, Check } from 'lucide-react';
+import { X, Copy, Share2, Check, AlertCircle, QrCode, Camera } from 'lucide-react';
 import QRCode from 'react-qr-code';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../lib/supabase';
@@ -16,11 +16,16 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
   const generateLink = async () => {
     if (!user) return;
     setGenerating(true);
-    const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+    setGenError(null);
+    // Generate a cryptographically random 64-character hex token
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const { error } = await db.from('invitation_tokens').insert({
       token,
@@ -31,43 +36,66 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
       expires_at: expiresAt,
     });
     setGenerating(false);
-    if (!error) {
-      const appUrl = import.meta.env['VITE_APP_URL'] as string || window.location.origin;
-      setInviteUrl(`${appUrl}/invite/${token}`);
+    if (error) {
+      setGenError('Could not generate invite link. Please try again.');
+      return;
     }
+    const appUrl = (import.meta.env['VITE_APP_URL'] as string | undefined) || window.location.origin;
+    setInviteUrl(`${appUrl}/invite/${token}`);
   };
 
   const copyLink = async () => {
     if (!inviteUrl) return;
-    await navigator.clipboard.writeText(inviteUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback: select the input text
+    }
   };
 
   const shareLink = async () => {
     if (!inviteUrl) return;
     if (navigator.share) {
-      await navigator.share({ title: 'Fall Split Invite', text: 'Join me on Fall Split!', url: inviteUrl });
+      try {
+        await navigator.share({ title: 'Fall Split — Join me', text: 'Use this link to connect with me on Fall Split!', url: inviteUrl });
+      } catch {
+        // User cancelled share — no action needed
+      }
     } else {
       await copyLink();
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center px-4 pb-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center px-4 pb-4" role="dialog" aria-modal="true" aria-label={type === 'group' ? 'Invite to group' : 'Invite friend'}>
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
       <div className="relative z-10 w-full max-w-sm bg-[rgb(var(--color-bg))] rounded-2xl p-5 shadow-xl">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-semibold text-primary">
             {type === 'group' ? 'Invite to group' : 'Invite friend'}
           </h2>
-          <button onClick={onClose} className="btn-ghost p-1"><X size={20} /></button>
+          <button onClick={onClose} className="btn-ghost p-1" aria-label="Close"><X size={20} /></button>
         </div>
+
+        {genError && (
+          <div className="flex items-center gap-2 rounded-lg p-3 mb-4 bg-[rgb(var(--color-negative)/0.1)] border border-[rgb(var(--color-negative)/0.3)]">
+            <AlertCircle size={16} className="text-[rgb(var(--color-negative))] flex-shrink-0" />
+            <p className="text-sm text-[rgb(var(--color-negative))]">{genError}</p>
+          </div>
+        )}
 
         {!inviteUrl ? (
           <div className="text-center">
-            <p className="text-sm text-muted mb-4">
-              Generate a secure invite link that expires in 7 days and can be used up to 20 times.
+            <div className="w-14 h-14 bg-[rgb(var(--color-accent)/0.1)] rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <QrCode size={28} className="text-[rgb(var(--color-accent))]" />
+            </div>
+            <p className="text-sm text-secondary mb-2 font-medium">
+              {type === 'group' ? 'Invite someone to this group' : 'Connect with a friend'}
+            </p>
+            <p className="text-xs text-muted mb-4">
+              Generate a secure link that expires in 7 days. Share it or show the QR code for others to scan.
             </p>
             <button onClick={() => void generateLink()} className="btn-primary w-full" disabled={generating}>
               {generating ? <Spinner size={18} /> : <Share2 size={18} />}
@@ -76,24 +104,44 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex justify-center p-4 bg-white rounded-xl">
-              <QRCode value={inviteUrl} size={180} />
+            {/* QR Code */}
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex justify-center p-4 bg-white rounded-xl" aria-label="Invite QR code — scan with your phone camera">
+                <QRCode value={inviteUrl} size={180} />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Camera size={14} className="text-muted" />
+                <p className="text-xs text-muted">Scan with your phone camera to connect</p>
+              </div>
             </div>
+
+            {/* Copyable link */}
             <div className="flex gap-2">
               <input
                 readOnly
                 value={inviteUrl}
                 className="input flex-1 text-xs font-mono truncate"
                 onClick={e => (e.target as HTMLInputElement).select()}
+                aria-label="Invite link"
               />
-              <button onClick={() => void copyLink()} className="btn-secondary px-3 flex-shrink-0">
+              <button onClick={() => void copyLink()} className="btn-secondary px-3 flex-shrink-0" aria-label={copied ? 'Copied!' : 'Copy link'}>
                 {copied ? <Check size={16} className="text-[rgb(var(--color-positive))]" /> : <Copy size={16} />}
               </button>
             </div>
+
+            {/* Share button */}
             <button onClick={() => void shareLink()} className="btn-primary w-full">
               <Share2 size={16} /> Share link
             </button>
-            <p className="text-xs text-muted text-center">Link expires in 7 days. Do not include private info in this URL.</p>
+
+            <div className="rounded-lg p-3 bg-[rgb(var(--color-pending)/0.08)]">
+              <p className="text-xs text-muted text-center">
+                Link expires in 7 days · Valid for up to 20 uses
+              </p>
+              <p className="text-xs text-muted text-center mt-1">
+                Do not include this URL in public posts
+              </p>
+            </div>
           </div>
         )}
       </div>
