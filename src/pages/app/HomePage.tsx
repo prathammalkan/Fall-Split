@@ -120,6 +120,18 @@ export function HomePage() {
   const hasError = loadState === 'error';
   const isEmpty = loadState === 'empty' || (data && data.owedToPaise === 0 && data.owingPaise === 0);
 
+  const summaryHeadline = (() => {
+    if (!data) return 'Checking your balances…';
+    if (data.owingPaise === 0 && data.owedToPaise === 0) return 'You\'re all caught up.';
+    if (data.owingPaise > 0 && data.owedToPaise > 0) {
+      return `You need to pay ${formatINR(data.owingPaise)}. You should receive ${formatINR(data.owedToPaise)}.`;
+    }
+    if (data.owingPaise > 0) {
+      return `You need to pay ${formatINR(data.owingPaise)}.`;
+    }
+    return `You should receive ${formatINR(data.owedToPaise)}.`;
+  })();
+
   return (
     <div className="page-content">
       {/* Header */}
@@ -175,29 +187,30 @@ export function HomePage() {
 
       {/* Balance hero card */}
       {!isLoading && !hasError && data && (data.owedToPaise > 0 || data.owingPaise > 0) && (
-        <div className="balance-hero mb-6" aria-label="Overall balance summary">
-          {/* Decorative background circles */}
+        <div className="balance-hero mb-6" aria-label="Overall balance summary" aria-live="polite">
           <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10" aria-hidden="true" />
           <div className="absolute -right-4 -bottom-10 w-28 h-28 rounded-full bg-white/5" aria-hidden="true" />
           <div className="relative">
-            <p className="text-white/70 text-sm font-medium mb-1">
-              {(data.netPaise ?? 0) >= 0 ? 'Net — you are owed' : 'Net — you owe'}
-            </p>
-            <p className="text-4xl font-black text-white tabular-nums mb-4">
-              {formatINR(Math.abs(data.netPaise))}
-            </p>
+            <p className="text-white/70 text-sm font-medium mb-1">Quick summary</p>
+            <p className="text-lg font-semibold text-white mb-3 leading-snug max-w-sm">{summaryHeadline}</p>
             <div className="flex gap-6">
               <div className="stat-item">
-                <p className="text-white/60 text-xs mb-0.5">You're owed</p>
-                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owedToPaise)}</p>
+                <p className="text-white/60 text-xs mb-0.5">You need to pay</p>
+                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owingPaise)}</p>
               </div>
               <div className="w-px bg-white/20" />
               <div className="stat-item">
-                <p className="text-white/60 text-xs mb-0.5">You owe</p>
-                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owingPaise)}</p>
+                <p className="text-white/60 text-xs mb-0.5">You should receive</p>
+                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owedToPaise)}</p>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {!isLoading && !hasError && data && data.owedToPaise === 0 && data.owingPaise === 0 && (
+        <div className="card mb-4" aria-live="polite">
+          <p className="text-center text-base font-semibold text-primary">You&apos;re all caught up.</p>
         </div>
       )}
 
@@ -216,7 +229,7 @@ export function HomePage() {
         <div className="mb-4">
           <p className="section-title mb-2 flex items-center gap-1.5">
             <ArrowUpRight size={14} className="text-[rgb(var(--color-negative))]" aria-hidden="true" />
-            Who you need to pay
+            People to pay
           </p>
           <div className="card p-0 overflow-hidden" role="list">
             {data!.youOwe.map((b) => (
@@ -225,16 +238,16 @@ export function HomePage() {
                 to={`/friends/${b.userId}`}
                 className="list-item"
                 role="listitem"
-                aria-label={`You owe ${b.profile.display_name} ${formatINR(Math.abs(b.netPaise))}`}
+                aria-label={`You need to pay ${b.profile.display_name} ${formatINR(Math.abs(b.netPaise))}`}
               >
                 <Avatar src={b.profile.avatar_url} name={b.profile.display_name} size={36} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-primary truncate">{b.profile.display_name}</p>
-                  <p className="text-xs text-muted">You owe them</p>
+                  <p className="text-xs text-muted">You need to pay</p>
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-semibold text-[rgb(var(--color-negative))] tabular-nums">{formatINR(Math.abs(b.netPaise))}</p>
-                  <p className="text-xs text-muted">Settle up →</p>
+                  <p className="text-xs text-muted">Pay →</p>
                 </div>
                 <ChevronRight size={16} className="text-muted flex-shrink-0" aria-hidden="true" />
               </Link>
@@ -243,12 +256,12 @@ export function HomePage() {
         </div>
       )}
 
-      {/* Who owes you */}
+      {/* People who need to pay you */}
       {!isLoading && (data?.owedToYou.length ?? 0) > 0 && (
         <div className="mb-4">
           <p className="section-title mb-2 flex items-center gap-1.5">
             <ArrowDownLeft size={14} className="text-[rgb(var(--color-positive))]" aria-hidden="true" />
-            Who owes you
+            People who need to pay you
           </p>
           <div className="card p-0 overflow-hidden" role="list">
             {data!.owedToYou.map((b) => (
@@ -257,16 +270,16 @@ export function HomePage() {
                 to={`/friends/${b.userId}`}
                 className="list-item"
                 role="listitem"
-                aria-label={`${b.profile.display_name} owes you ${formatINR(b.netPaise)}`}
+                aria-label={`${b.profile.display_name} needs to pay you ${formatINR(b.netPaise)}`}
               >
                 <Avatar src={b.profile.avatar_url} name={b.profile.display_name} size={36} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-primary truncate">{b.profile.display_name}</p>
-                  <p className="text-xs text-muted">Owes you</p>
+                  <p className="text-xs text-muted">Needs to pay you</p>
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-semibold text-[rgb(var(--color-positive))] tabular-nums">{formatINR(b.netPaise)}</p>
-                  <p className="text-xs text-muted">Request →</p>
+                  <p className="text-xs text-muted">Review →</p>
                 </div>
                 <ChevronRight size={16} className="text-muted flex-shrink-0" aria-hidden="true" />
               </Link>
@@ -281,9 +294,9 @@ export function HomePage() {
           <div className="w-16 h-16 rounded-2xl bg-[rgb(var(--color-accent)/0.1)] flex items-center justify-center mx-auto mb-4">
             <Users size={32} className="text-[rgb(var(--color-accent))]" aria-hidden="true" />
           </div>
-          <h2 className="text-base font-semibold text-primary mb-2">No outstanding balances</h2>
+          <h2 className="text-base font-semibold text-primary mb-2">You have no unpaid expenses.</h2>
           <p className="text-sm text-muted mb-4 max-w-xs mx-auto">
-            Add a friend and create your first expense to start tracking who owes what.
+            Add a friend or record a new expense to keep things moving.
           </p>
           <div className="flex flex-col gap-2 max-w-xs mx-auto">
             <Link to="/friends" className="btn-primary">Add a friend</Link>
