@@ -9,6 +9,7 @@ import { Avatar } from '../../components/ui/Avatar';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Spinner } from '../../components/ui/Spinner';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
+import { PaymentRequestModal } from '../../components/ui/PaymentRequestModal';
 import { format } from 'date-fns';
 
 interface Settlement {
@@ -57,6 +58,7 @@ export function SettlementsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [dismissedPendingIds, setDismissedPendingIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -75,6 +77,25 @@ export function SettlementsPage() {
   }, [user]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const pendingIncoming = settlements.filter(
+    (settlement) => settlement.recipient_id === user?.id && (settlement.status === 'proposed' || settlement.status === 'pending')
+  );
+  const modalSettlement = pendingIncoming.find((settlement) => !dismissedPendingIds.includes(settlement.id)) ?? null;
+
+  const closePendingModal = () => {
+    if (!modalSettlement) return;
+    setDismissedPendingIds((prev) => prev.includes(modalSettlement.id) ? prev : [...prev, modalSettlement.id]);
+  };
+
+  const handleIncomingAction = async (id: string, action: 'confirm' | 'reject') => {
+    if (action === 'confirm') {
+      await confirmSettlement(id);
+    } else {
+      await rejectSettlement(id);
+    }
+    setDismissedPendingIds((prev) => prev.includes(id) ? prev : [...prev, id]);
+  };
 
   const confirmSettlement = async (id: string) => {
     if (!user) return;
@@ -130,6 +151,26 @@ export function SettlementsPage() {
 
   return (
     <div>
+      {modalSettlement && (
+        <PaymentRequestModal
+          open={Boolean(modalSettlement)}
+          payerName={modalSettlement.payer.display_name}
+          recipientName={modalSettlement.recipient.display_name}
+          amountPaise={modalSettlement.amount_paise}
+          relatedLabel={modalSettlement.notes ?? 'Payment request'}
+          dateTime={modalSettlement.created_at}
+          statusLabel={STATUS_LABELS[modalSettlement.status] ?? modalSettlement.status}
+          variant="incoming"
+          loading={actionLoading === modalSettlement.id}
+          onClose={closePendingModal}
+          onConfirm={() => { void handleIncomingAction(modalSettlement.id, 'confirm'); }}
+          onReject={() => { void handleIncomingAction(modalSettlement.id, 'reject'); }}
+          onReviewDetails={() => { closePendingModal(); }}
+          confirmLabel="Confirm received"
+          rejectLabel="Not received"
+        />
+      )}
+
       <PageHeader
         title="Settlements"
         back
@@ -146,6 +187,26 @@ export function SettlementsPage() {
       />
       <div className="page-content pt-4">
         {error && <ErrorMessage message={error} />}
+
+        {pendingIncoming.length > 0 && (
+          <div className="card mb-3">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-semibold text-primary">Pending payments</h2>
+              <span className="badge-pending">{pendingIncoming.length}</span>
+            </div>
+            <div className="space-y-2">
+              {pendingIncoming.slice(0, 3).map((settlement) => (
+                <div key={settlement.id} className="flex items-center justify-between gap-3 rounded-lg bg-[rgb(var(--color-pending)/0.06)] px-2.5 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-primary">{settlement.payer.display_name}</p>
+                    <p className="text-[11px] text-muted">{STATUS_LABELS[settlement.status] ?? settlement.status}</p>
+                  </div>
+                  <p className="text-sm font-semibold text-primary tabular-nums">{formatINR(settlement.amount_paise)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-8"><Spinner size={24} /></div>

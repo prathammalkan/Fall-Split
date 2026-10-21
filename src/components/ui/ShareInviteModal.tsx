@@ -12,7 +12,7 @@ interface ShareInviteModalProps {
 }
 
 export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInviteModalProps) {
-  const { user } = useAuth();
+  const { user, emailVerified } = useAuth();
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -97,7 +97,17 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
             <p className="text-xs text-muted mb-4">
               Generate a secure link that expires in 7 days. Share it or show the QR code for others to scan.
             </p>
-            <button onClick={() => void generateLink()} className="btn-primary w-full" disabled={generating}>
+            {!emailVerified && (
+              <div className="mb-4 rounded-lg border border-[rgb(var(--color-pending)/0.35)] bg-[rgb(var(--color-pending)/0.08)] p-3 text-left">
+                <p className="text-xs text-[rgb(var(--color-pending))] font-medium">Verify your email before sending invites.</p>
+              </div>
+            )}
+            <button
+              onClick={() => void generateLink()}
+              className="btn-primary w-full"
+              disabled={generating || !emailVerified}
+              title={!emailVerified ? 'Verify your email to generate invite links' : undefined}
+            >
               {generating ? <Spinner size={18} /> : <Share2 size={18} />}
               Generate invite link
             </button>
