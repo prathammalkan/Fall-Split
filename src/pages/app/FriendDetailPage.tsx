@@ -136,8 +136,8 @@ export function FriendDetailPage() {
           <div className="card text-center">
             <p className="text-xs text-muted mb-1">
               {netPaise > 0
-                ? `${friendProfile.display_name} owes you`
-                : `You owe ${friendProfile.display_name}`}
+                ? `${friendProfile.display_name} needs to pay you`
+                : `You need to pay ${friendProfile.display_name}`}
             </p>
             <p className={`text-2xl font-bold tabular-nums ${netPaise > 0 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>
               {formatINR(Math.abs(netPaise))}
@@ -148,7 +148,7 @@ export function FriendDetailPage() {
 
         {balanceLoaded && netPaise === 0 && (
           <div className="card text-center py-4">
-            <p className="text-sm text-[rgb(var(--color-positive))] font-medium">✓ All settled up with {friendProfile.display_name}</p>
+            <p className="text-sm text-[rgb(var(--color-positive))] font-medium">✓ You are all settled up with {friendProfile.display_name}</p>
           </div>
         )}
 
@@ -157,7 +157,7 @@ export function FriendDetailPage() {
           <div className="flex gap-2">
             {netPaise < 0 && (
               <button onClick={() => setShowSettle(true)} className="btn-secondary flex-1">
-                <Handshake size={16} aria-hidden="true" /> Settle up
+                <Handshake size={16} aria-hidden="true" /> Pay back
               </button>
             )}
             {upiLink && (
@@ -167,7 +167,7 @@ export function FriendDetailPage() {
             )}
             {netPaise > 0 && (
               <div className="flex-1 rounded-lg p-3 bg-[rgb(var(--color-positive)/0.08)] border border-[rgb(var(--color-positive)/0.2)] text-center">
-                <p className="text-xs text-muted">Ask {friendProfile.display_name} to settle up with you</p>
+                <p className="text-xs text-muted">Ask {friendProfile.display_name} to pay you back</p>
               </div>
             )}
           </div>

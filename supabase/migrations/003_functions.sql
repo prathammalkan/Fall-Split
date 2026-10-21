@@ -44,7 +44,7 @@ BEGIN
 
   -- Handle friend invitation
   IF v_token_record.type = 'friend' THEN
-    -- Check if already friends or request exists
+    -- Check if an accepted friendship already exists in either direction.
     IF EXISTS (
       SELECT 1 FROM friend_requests
       WHERE ((sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
@@ -54,11 +54,20 @@ BEGIN
       RETURN jsonb_build_object('error', 'Already friends');
     END IF;
 
-    -- Upsert friend relationship: insert accepted request
-    INSERT INTO friend_requests (sender_id, receiver_id, status)
-    VALUES (v_token_record.creator_id, v_caller_id, 'accepted')
-    ON CONFLICT (sender_id, receiver_id) DO UPDATE
-      SET status = 'accepted', updated_at = NOW();
+    -- Insert or update the friendship row without assuming a direction-specific unique index.
+    IF EXISTS (
+      SELECT 1 FROM friend_requests
+      WHERE (sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
+         OR (sender_id = v_caller_id AND receiver_id = v_token_record.creator_id)
+    ) THEN
+      UPDATE friend_requests
+      SET status = 'accepted', updated_at = NOW()
+      WHERE (sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
+         OR (sender_id = v_caller_id AND receiver_id = v_token_record.creator_id);
+    ELSE
+      INSERT INTO friend_requests (sender_id, receiver_id, status)
+      VALUES (v_token_record.creator_id, v_caller_id, 'accepted');
+    END IF;
 
     -- Increment use count
     UPDATE invitation_tokens
