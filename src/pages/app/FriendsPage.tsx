@@ -66,7 +66,11 @@ export function FriendsPage() {
 
       let profiles: Profile[] = [];
       if (otherIds.length > 0) {
-        const { data } = await supabase.from('profiles').select('*').in('id', otherIds);
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('id', otherIds)
+          .is('deleted_at', null);
         profiles = (data ?? []) as unknown as Profile[];
       }
 

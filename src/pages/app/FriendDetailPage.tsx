@@ -175,42 +175,57 @@ export function FriendDetailPage() {
 
         {/* Settle up form */}
         {showSettle && (
-          <div className="card space-y-3">
-            <p className="text-sm font-semibold text-primary">Propose a settlement</p>
-            <p className="text-xs text-muted">
-              Enter the amount you are paying {friendProfile.display_name}.
-              They must confirm receipt before your balance updates.
-            </p>
-
-            {upiLink && (
-              <div className="flex items-center gap-2 rounded-lg p-2.5 bg-[rgb(var(--color-pending)/0.08)]">
-                <AlertCircle size={14} className="text-[rgb(var(--color-pending))] flex-shrink-0" aria-hidden="true" />
-                <p className="text-xs text-muted">If paying via UPI, also record the amount here so {friendProfile.display_name} can confirm.</p>
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-label={`Settle up with ${friendProfile.display_name}`}>
+            <div className="absolute inset-0 bg-black/50" onClick={() => { setShowSettle(false); setSettleAmount(''); setSettleError(null); }} aria-hidden="true" />
+            <div className="relative z-10 w-full max-w-md rounded-2xl border border-[rgb(var(--color-border))] bg-[rgb(var(--color-bg))] p-5 shadow-2xl">
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-[rgb(var(--color-pending))] font-medium">Send payment</p>
+                  <h2 className="mt-1 text-xl font-semibold text-primary">Mark as paid</h2>
+                </div>
+                <button
+                  onClick={() => { setShowSettle(false); setSettleAmount(''); setSettleError(null); setSettlementKey(''); }}
+                  className="btn-ghost p-1.5 rounded-full"
+                  aria-label="Close settlement form"
+                >
+                  <Plus size={18} className="rotate-45" aria-hidden="true" />
+                </button>
               </div>
-            )}
 
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted">₹</span>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={settleAmount}
-                onChange={e => setSettleAmount(e.target.value)}
-                className="input pl-7"
-                placeholder={(Math.abs(netPaise) / 100).toFixed(2)}
-                aria-label="Settlement amount in rupees"
-                min="0.01"
-                step="0.01"
-              />
-            </div>
+              <p className="text-sm text-secondary mb-4">
+                You are about to send {formatINR(Math.abs(netPaise))} to {friendProfile.display_name}. They must confirm receipt before your balance updates.
+              </p>
 
-            {settleError && <ErrorMessage message={settleError} />}
+              {upiLink && (
+                <div className="flex items-center gap-2 rounded-lg p-2.5 bg-[rgb(var(--color-pending)/0.08)] mb-4">
+                  <AlertCircle size={14} className="text-[rgb(var(--color-pending))] flex-shrink-0" aria-hidden="true" />
+                  <p className="text-xs text-muted">If paying via UPI, also record the amount here so {friendProfile.display_name} can confirm.</p>
+                </div>
+              )}
 
-            <div className="flex gap-2">
-              <button onClick={() => { setShowSettle(false); setSettleAmount(''); setSettleError(null); setSettlementKey(''); }} className="btn-secondary flex-1">Cancel</button>
-              <button onClick={() => void proposeSettlement()} className="btn-primary flex-1" disabled={settling}>
-                {settling ? <Spinner size={16} /> : null} Send proposal
-              </button>
+              <div className="relative mb-4">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted">₹</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={settleAmount}
+                  onChange={e => setSettleAmount(e.target.value)}
+                  className="input pl-7"
+                  placeholder={(Math.abs(netPaise) / 100).toFixed(2)}
+                  aria-label="Settlement amount in rupees"
+                  min="0.01"
+                  step="0.01"
+                />
+              </div>
+
+              {settleError && <ErrorMessage message={settleError} />}
+
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => { setShowSettle(false); setSettleAmount(''); setSettleError(null); setSettlementKey(''); }} className="btn-secondary flex-1">Cancel</button>
+                <button onClick={() => void proposeSettlement()} className="btn-primary flex-1" disabled={settling}>
+                  {settling ? <Spinner size={16} /> : null} Mark as paid
+                </button>
+              </div>
             </div>
           </div>
         )}

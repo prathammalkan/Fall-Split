@@ -39,7 +39,7 @@ export function HomePage() {
       const { data: balances, error: rpcError } = await supabase.rpc('get_friend_balances');
       if (rpcError) throw rpcError;
 
-      const rawBalances = (balances ?? []) as { other_user_id: string; net_paise: number }[];
+      let rawBalances = (balances ?? []) as { other_user_id: string; net_paise: number }[];
 
       if (rawBalances.length === 0) {
         setData({ netPaise: 0, owedToPaise: 0, owingPaise: 0, youOwe: [], owedToYou: [] });
@@ -51,11 +51,15 @@ export function HomePage() {
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('*')
-        .in('id', otherIds);
+        .in('id', otherIds)
+        .is('deleted_at', null);
       if (profileError) throw profileError;
       const profiles = (profileData ?? []) as unknown as Profile[];
-      if (profiles.length !== otherIds.length) {
-        throw new Error('Could not load every profile associated with your balances.');
+      const missingProfileIds = otherIds.filter(id => !profiles.some(profile => profile.id === id));
+      if (missingProfileIds.length > 0) {
+        // Soft-deleted or missing profiles are intentionally excluded from the current
+        // balance view rather than crashing the whole dashboard.
+        rawBalances = rawBalances.filter(balance => !missingProfileIds.includes(balance.other_user_id));
       }
 
       let owedToPaise = 0;

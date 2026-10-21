@@ -28,6 +28,7 @@ export function SearchPage() {
       const { data } = await supabase
         .from('profiles')
         .select('id, username, display_name, avatar_url')
+        .is('deleted_at', null)
         .ilike('username', `${q}%`)
         .neq('id', user?.id ?? '')
         .limit(15);
