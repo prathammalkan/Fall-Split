@@ -95,6 +95,15 @@ describe('unequalSplit', () => {
   it('throws for empty assignments', () => {
     expect(() => unequalSplit(10000, [])).toThrow();
   });
+
+  it('throws for duplicate participant IDs', () => {
+    expect(() =>
+      unequalSplit(10000, [
+        { userId: 'a', amountPaise: 6000 },
+        { userId: 'a', amountPaise: 4000 },
+      ])
+    ).toThrow();
+  });
 });
 
 describe('percentageSplit', () => {
@@ -132,6 +141,15 @@ describe('percentageSplit', () => {
       percentageSplit(10000, [
         { userId: 'a', percentage: 110 },
         { userId: 'b', percentage: -10 },
+      ])
+    ).toThrow();
+  });
+
+  it('throws for non-finite percentages', () => {
+    expect(() =>
+      percentageSplit(10000, [
+        { userId: 'a', percentage: Number.NaN },
+        { userId: 'b', percentage: 100 },
       ])
     ).toThrow();
   });

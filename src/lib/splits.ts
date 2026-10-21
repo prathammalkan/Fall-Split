@@ -28,6 +28,14 @@ export function equalSplit(
     throw new Error('equalSplit: at least one participant required');
   }
 
+  const seen = new Set<string>();
+  for (const userId of participantIds) {
+    if (typeof userId !== 'string' || userId.trim() === '' || seen.has(userId)) {
+      throw new Error('equalSplit: participantIds must be unique, non-empty strings');
+    }
+    seen.add(userId);
+  }
+
   const n = participantIds.length;
   const base = Math.floor(totalPaise / n);
   const remainder = totalPaise % n;
@@ -62,8 +70,13 @@ export function unequalSplit(
     throw new Error('unequalSplit: at least one assignment required');
   }
 
+  const seen = new Set<string>();
   for (const a of assignments) {
-    if (!Number.isInteger(a.amountPaise) || a.amountPaise < 0) {
+    if (typeof a.userId !== 'string' || a.userId.trim() === '' || seen.has(a.userId)) {
+      throw new Error('unequalSplit: userId must be unique and non-empty');
+    }
+    seen.add(a.userId);
+    if (!Number.isFinite(a.amountPaise) || !Number.isInteger(a.amountPaise) || a.amountPaise < 0) {
       throw new Error(
         `unequalSplit: amountPaise must be a non-negative integer for ${a.userId}, got ${a.amountPaise}`
       );
@@ -100,8 +113,13 @@ export function percentageSplit(
     throw new Error('percentageSplit: at least one assignment required');
   }
 
+  const seen = new Set<string>();
   for (const a of assignments) {
-    if (a.percentage < 0 || a.percentage > 100) {
+    if (typeof a.userId !== 'string' || a.userId.trim() === '' || seen.has(a.userId)) {
+      throw new Error('percentageSplit: userId must be unique and non-empty');
+    }
+    seen.add(a.userId);
+    if (!Number.isFinite(a.percentage) || a.percentage < 0 || a.percentage > 100) {
       throw new Error(
         `percentageSplit: invalid percentage ${a.percentage} for ${a.userId}`
       );
@@ -168,9 +186,14 @@ export function sharesSplit(
     throw new Error('sharesSplit: at least one assignment required');
   }
 
+  const seen = new Set<string>();
   for (const a of assignments) {
-    if (a.shares <= 0) {
-      throw new Error(`sharesSplit: shares must be positive for ${a.userId}, got ${a.shares}`);
+    if (typeof a.userId !== 'string' || a.userId.trim() === '' || seen.has(a.userId)) {
+      throw new Error('sharesSplit: userId must be unique and non-empty');
+    }
+    seen.add(a.userId);
+    if (!Number.isFinite(a.shares) || a.shares <= 0) {
+      throw new Error(`sharesSplit: shares must be a positive finite number for ${a.userId}, got ${a.shares}`);
     }
   }
 
@@ -243,6 +266,23 @@ export function itemizedSplit(
     if (!Number.isInteger(item.totalPaise) || item.totalPaise < 0) {
       throw new Error(`itemizedSplit: item "${item.name}" has invalid totalPaise`);
     }
+    if (item.participants.length === 0) {
+      throw new Error(`itemizedSplit: item "${item.name}" requires at least one participant`);
+    }
+
+    const seen = new Set<string>();
+    for (const p of item.participants) {
+      if (typeof p.userId !== 'string' || p.userId.trim() === '' || seen.has(p.userId)) {
+        throw new Error(`itemizedSplit: item "${item.name}" has duplicate or invalid userId`);
+      }
+      seen.add(p.userId);
+      if (!Number.isFinite(p.amountPaise) || !Number.isInteger(p.amountPaise) || p.amountPaise < 0) {
+        throw new Error(
+          `itemizedSplit: item "${item.name}" has invalid amountPaise for ${p.userId}`
+        );
+      }
+    }
+
     const itemSum = item.participants.reduce((acc, p) => acc + p.amountPaise, 0);
     if (itemSum !== item.totalPaise) {
       throw new Error(
@@ -287,11 +327,19 @@ export function validateMultiplePayers(
   totalPaise: number,
   payers: { userId: string; amountPaise: number }[]
 ): void {
+  if (!Number.isInteger(totalPaise) || totalPaise <= 0) {
+    throw new Error('validateMultiplePayers: totalPaise must be a positive integer');
+  }
   if (payers.length === 0) {
     throw new Error('validateMultiplePayers: at least one payer required');
   }
+  const seen = new Set<string>();
   for (const p of payers) {
-    if (!Number.isInteger(p.amountPaise) || p.amountPaise <= 0) {
+    if (typeof p.userId !== 'string' || p.userId.trim() === '' || seen.has(p.userId)) {
+      throw new Error('validateMultiplePayers: userId must be unique and non-empty');
+    }
+    seen.add(p.userId);
+    if (!Number.isFinite(p.amountPaise) || !Number.isInteger(p.amountPaise) || p.amountPaise <= 0) {
       throw new Error(
         `validateMultiplePayers: amountPaise must be a positive integer for ${p.userId}`
       );
