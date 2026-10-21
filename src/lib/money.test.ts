@@ -47,6 +47,11 @@ describe('formatINRCompact', () => {
     const result = formatINRCompact(10000000); // ₹1,00,000
     expect(result).toBe('₹1.0L');
   });
+
+  it('keeps the sign for negative values', () => {
+    expect(formatINRCompact(-200000)).toBe('-₹2.0K');
+    expect(formatINRCompact(-10000000)).toBe('-₹1.0L');
+  });
 });
 
 describe('parseINR', () => {

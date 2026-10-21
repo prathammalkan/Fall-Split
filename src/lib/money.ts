@@ -31,15 +31,17 @@ export function formatINRCompact(paise: number): string {
   if (!Number.isInteger(paise)) {
     throw new Error(`formatINRCompact: paise must be integer, got ${paise}`);
   }
+  const isNegative = paise < 0;
   const abs = Math.abs(paise);
   const rupees = abs / 100;
+  const prefix = isNegative ? '-' : '';
   if (rupees >= 100000) {
-    return `₹${(rupees / 100000).toFixed(1)}L`;
+    return `${prefix}₹${(rupees / 100000).toFixed(1)}L`;
   }
   if (rupees >= 1000) {
-    return `₹${(rupees / 1000).toFixed(1)}K`;
+    return `${prefix}₹${(rupees / 1000).toFixed(1)}K`;
   }
-  return formatINR(paise);
+  return `${prefix}${formatINR(abs).replace(/^-/,'')}`;
 }
 
 /**
