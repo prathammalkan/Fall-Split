@@ -108,8 +108,36 @@
 
   /* Cards */
   .card {
-    @apply rounded-xl p-4;
+    @apply rounded-2xl p-4;
     background: rgb(var(--color-bg-secondary));
+    border: 1px solid rgb(var(--color-border));
+  }
+
+  /* Elevated card variant */
+  .card-elevated {
+    @apply rounded-2xl p-4;
+    background: rgb(var(--color-bg-secondary));
+    border: 1px solid rgb(var(--color-border));
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.06);
+  }
+
+  /* Gradient hero card for home page balance summary */
+  .balance-hero {
+    @apply rounded-2xl p-6 relative overflow-hidden;
+    background: linear-gradient(135deg, rgb(var(--color-accent)) 0%, rgb(249 115 22 / 0.8) 100%);
+    color: white;
+  }
+
+  /* Stat item inside hero */
+  .stat-item {
+    @apply text-center;
+  }
+
+  /* Pill / chip */
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium;
+    background: rgb(var(--color-bg-tertiary));
+    color: rgb(var(--color-text-secondary));
     border: 1px solid rgb(var(--color-border));
   }
 

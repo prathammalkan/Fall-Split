@@ -48,6 +48,35 @@ describe('calculatePairBalances', () => {
     expect(aPerspective).toBeUndefined();
   });
 
+  it('settles the exact ₹25 share of a ₹50 two-person expense', () => {
+    const ledger: RawLedgerEntry[] = [
+      { payerUserId: 'A', participantUserId: 'A', amountPaise: 2500 },
+      { payerUserId: 'A', participantUserId: 'B', amountPaise: 2500 },
+    ];
+    const settled: SettledEntry[] = [
+      { payerUserId: 'B', recipientUserId: 'A', amountPaise: 2500 },
+    ];
+
+    expect(calculatePairBalances(ledger, []).find(
+      (balance) => balance.userId === 'A' && balance.otherUserId === 'B'
+    )?.netPaise).toBe(2500);
+    expect(calculatePairBalances(ledger, settled)).toHaveLength(0);
+  });
+
+  it('keeps the unpaid remainder after a partial settlement', () => {
+    const ledger: RawLedgerEntry[] = [
+      { payerUserId: 'A', participantUserId: 'B', amountPaise: 5000 },
+    ];
+    const settled: SettledEntry[] = [
+      { payerUserId: 'B', recipientUserId: 'A', amountPaise: 2500 },
+    ];
+    const aBalance = calculatePairBalances(ledger, settled).find(
+      (balance) => balance.userId === 'A' && balance.otherUserId === 'B'
+    );
+
+    expect(aBalance?.netPaise).toBe(2500);
+  });
+
   it('filters by groupId', () => {
     const ledger: RawLedgerEntry[] = [
       { payerUserId: 'A', participantUserId: 'B', amountPaise: 5000, groupId: 'g1' },

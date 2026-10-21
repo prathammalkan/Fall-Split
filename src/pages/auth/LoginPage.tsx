@@ -62,7 +62,7 @@ export function LoginPage() {
     saveRedirectForPostAuth();
     setMagicLoading(true);
     setError(null);
-    const { error } = await signInWithMagicLink(magicEmail);
+    const { error } = await signInWithMagicLink(magicEmail, redirectTo);
     setMagicLoading(false);
     if (error) {
       setError('Could not send magic link. Try again.');
@@ -75,7 +75,7 @@ export function LoginPage() {
     saveRedirectForPostAuth();
     setGoogleLoading(true);
     setError(null);
-    const { error } = await signInWithGoogle();
+    const { error } = await signInWithGoogle(redirectTo);
     if (error) {
       setError('Google sign-in failed. Check your OAuth configuration.');
       setGoogleLoading(false);
@@ -87,7 +87,7 @@ export function LoginPage() {
     saveRedirectForPostAuth();
     setAppleLoading(true);
     setError(null);
-    const { error } = await signInWithApple();
+    const { error } = await signInWithApple(redirectTo);
     if (error) {
       setError('Apple sign-in failed. Check your OAuth configuration.');
       setAppleLoading(false);

@@ -119,12 +119,16 @@ Payment settlements between users.
 
 **Settlement lifecycle:**
 ```
-proposed → pending → confirmed
- ↓
- rejected / cancelled
+proposed/pending → confirmed
+             ↘ rejected/cancelled
 ```
 
-Only `confirmed` settlements affect balance calculations.
+Only `confirmed` settlements affect balance calculations. A payer creates a
+settlement through `propose_settlement`; the recipient must confirm it through
+`respond_to_settlement`. Both operations recalculate outstanding debt on the
+server. `cancel_settlement` is payer-only. Confirmed settlements cannot be
+edited or deleted, and settlement amounts and parties cannot be changed after
+creation. Idempotency keys prevent duplicate proposals on retries.
 
 ### `notifications`
 
@@ -170,6 +174,28 @@ Securely accepts a friend or group invitation token. Runs with `SECURITY DEFINER
 
 Returns net paise balances between the calling user and all their connections, computed from expense shares and confirmed settlements.
 
+### Settlement RPCs
+
+- `propose_settlement(p_recipient_id, p_amount_paise, p_idempotency_key)` validates the payer's current debt and rejects overpayment.
+- `respond_to_settlement(p_settlement_id, p_action)` is recipient-only and rechecks remaining debt under a per-pair transaction lock before confirmation.
+- `cancel_settlement(p_settlement_id)` is payer-only.
+
+Direct client inserts and updates to settlements are denied by RLS. Balance
+changes come only from confirmed settlement records.
+
+### `get_group_balances(p_group_id UUID) → TABLE`
+
+Returns a caller-relative group balance only when the caller is an active
+member of the requested group. The function checks membership itself because
+`SECURITY DEFINER` functions bypass ordinary RLS checks.
+
+### `get_invitation_preview(p_token TEXT) → JSONB`
+
+Returns only the inviter's display name and invitation type for a live token.
+It is callable before sign-in so camera-scanned invitation links can reach the
+sign-in flow. Invitation rows themselves remain private; accepting still
+requires authentication and server-side token validation.
+
 ## Migrations
 
 | File | Description |
@@ -177,5 +203,15 @@ Returns net paise balances between the calling user and all their connections, c
 | `001_core_schema.sql` | All tables, indexes, triggers |
 | `002_rls_policies.sql` | Row Level Security policies |
 | `003_functions.sql` | Server-side RPCs |
+| `004_settlements_rejected_at.sql` | Rejection timestamps and constraint |
+| `005_fix_friend_balances.sql` | Multi-payer friend balance calculation |
+| `006_fix_accept_invitation_and_group_balances.sql` | Invitation acceptance and group balances |
+| `007_sync_schema_columns.sql` | Schema/type synchronization |
+| `008_delete_account_rpc.sql` | Account anonymization RPC |
+| `009_settlement_integrity.sql` | Atomic debt-validated settlement lifecycle |
+| `010_invitation_preview.sql` | Safe pre-auth invitation preview and token privacy |
+| `011_group_balance_membership_guard.sql` | Group membership enforcement in balance RPC |
 
-Run migrations in order. They are idempotent (`CREATE OR REPLACE`, `IF NOT EXISTS`).
+Apply migrations in numeric order to the intended Supabase project. These
+migrations were not applied to a local database as Supabase CLI and Docker were
+unavailable in the current environment.

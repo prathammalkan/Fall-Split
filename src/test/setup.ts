@@ -4,7 +4,11 @@ import { IDBFactory } from 'fake-indexeddb';
 
 // Mock Supabase — tests must not make real network calls
 vi.mock('../lib/supabase', () => ({
+  db: {
+    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
+  },
   supabase: {
+    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
     auth: {
       getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
       onAuthStateChange: vi.fn().mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } }),
