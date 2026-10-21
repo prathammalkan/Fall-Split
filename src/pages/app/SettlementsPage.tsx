@@ -80,11 +80,10 @@ export function SettlementsPage() {
     if (!user) return;
     setActionLoading(id);
     setError(null);
-    const { error: updateErr } = await db
-      .from('settlements')
-      .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('recipient_id', user.id);
+    const { error: updateErr } = await db.rpc('respond_to_settlement', {
+      p_settlement_id: id,
+      p_action: 'confirm',
+    });
     setActionLoading(null);
     if (updateErr) {
       setError('Could not confirm this payment. The other party may have already cancelled it.');
@@ -97,11 +96,10 @@ export function SettlementsPage() {
     if (!user) return;
     setActionLoading(id);
     setError(null);
-    const { error: updateErr } = await db
-      .from('settlements')
-      .update({ status: 'rejected', rejected_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('recipient_id', user.id);
+    const { error: updateErr } = await db.rpc('respond_to_settlement', {
+      p_settlement_id: id,
+      p_action: 'reject',
+    });
     setActionLoading(null);
     if (updateErr) {
       setError('Could not decline this settlement.');
@@ -114,11 +112,9 @@ export function SettlementsPage() {
     if (!user) return;
     setActionLoading(id);
     setError(null);
-    const { error: updateErr } = await db
-      .from('settlements')
-      .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('payer_id', user.id);
+    const { error: updateErr } = await db.rpc('cancel_settlement', {
+      p_settlement_id: id,
+    });
     setActionLoading(null);
     if (updateErr) {
       setError('Could not cancel this settlement.');

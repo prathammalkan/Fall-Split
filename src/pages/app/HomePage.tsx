@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, ChevronRight, Bell, Users, ArrowUpRight, ArrowDownLeft, RefreshCw } from 'lucide-react';
+import { Plus, ChevronRight, Bell, Users, ArrowUpRight, ArrowDownLeft, RefreshCw, Handshake } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
@@ -48,11 +48,15 @@ export function HomePage() {
       }
 
       const otherIds = rawBalances.map(b => b.other_user_id);
-      const { data: profileData } = await supabase
+      const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('*')
         .in('id', otherIds);
+      if (profileError) throw profileError;
       const profiles = (profileData ?? []) as unknown as Profile[];
+      if (profiles.length !== otherIds.length) {
+        throw new Error('Could not load every profile associated with your balances.');
+      }
 
       let owedToPaise = 0;
       let owingPaise = 0;
@@ -118,6 +122,14 @@ export function HomePage() {
       <header className="flex items-center justify-between mb-6">
         <LogoFull />
         <div className="flex items-center gap-2">
+          <Link
+            to="/settlements"
+            className="btn-ghost p-2 rounded-full"
+            aria-label="Paid, received, and pending payments"
+            title="Payments"
+          >
+            <Handshake size={20} />
+          </Link>
           <button
             onClick={() => void loadHomeData()}
             className="btn-ghost p-2 rounded-full"
@@ -157,75 +169,43 @@ export function HomePage() {
         </div>
       )}
 
-      {/* Overall balance summary card */}
-      <div className="card mb-4" aria-label="Overall balance summary">
-        <div className="text-center py-2 mb-4">
-          <p className="text-xs text-muted uppercase tracking-wider mb-1">Overall balance</p>
-          {isLoading ? (
-            <div className="skeleton h-10 w-36 mx-auto" aria-hidden="true" />
-          ) : isEmpty ? (
-            <p className="text-3xl font-bold text-[rgb(var(--color-text-secondary))]">All settled up</p>
-          ) : (
-            <p className={`text-4xl font-bold tabular-nums ${
-              (data?.netPaise ?? 0) > 0
-                ? 'text-[rgb(var(--color-positive))]'
-                : (data?.netPaise ?? 0) < 0
-                  ? 'text-[rgb(var(--color-negative))]'
-                  : 'text-secondary'
-            }`}>
-              {data ? (
-                data.netPaise > 0
-                  ? `+${formatINR(data.netPaise)}`
-                  : data.netPaise < 0
-                    ? `-${formatINR(Math.abs(data.netPaise))}`
-                    : '₹0.00'
-              ) : '₹0.00'}
+      {/* Balance hero card */}
+      {!isLoading && !hasError && data && (data.owedToPaise > 0 || data.owingPaise > 0) && (
+        <div className="balance-hero mb-6" aria-label="Overall balance summary">
+          {/* Decorative background circles */}
+          <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10" aria-hidden="true" />
+          <div className="absolute -right-4 -bottom-10 w-28 h-28 rounded-full bg-white/5" aria-hidden="true" />
+          <div className="relative">
+            <p className="text-white/70 text-sm font-medium mb-1">
+              {(data.netPaise ?? 0) >= 0 ? 'Net — you are owed' : 'Net — you owe'}
             </p>
-          )}
-          {!isLoading && !isEmpty && data && (
-            <p className="text-xs text-muted mt-1">
-              {data.netPaise > 0
-                ? 'You are owed more than you owe'
-                : data.netPaise < 0
-                  ? 'You owe more than you are owed'
-                  : 'Your debts and credits cancel out'}
+            <p className="text-4xl font-black text-white tabular-nums mb-4">
+              {formatINR(Math.abs(data.netPaise))}
             </p>
-          )}
-        </div>
-
-        {/* Two-column breakdown */}
-        <div className="grid grid-cols-2 gap-3">
-          {/* Owed to you */}
-          <div className="rounded-lg p-3 bg-[rgb(var(--color-positive)/0.08)]" aria-label="Amount owed to you">
-            <div className="flex items-center gap-1.5 mb-1">
-              <ArrowDownLeft size={14} className="text-[rgb(var(--color-positive))]" aria-hidden="true" />
-              <span className="text-xs text-muted">Owed to you</span>
+            <div className="flex gap-6">
+              <div className="stat-item">
+                <p className="text-white/60 text-xs mb-0.5">You're owed</p>
+                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owedToPaise)}</p>
+              </div>
+              <div className="w-px bg-white/20" />
+              <div className="stat-item">
+                <p className="text-white/60 text-xs mb-0.5">You owe</p>
+                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owingPaise)}</p>
+              </div>
             </div>
-            {isLoading
-              ? <div className="skeleton h-6 w-20" aria-hidden="true" />
-              : <p className="text-lg font-semibold text-[rgb(var(--color-positive))] tabular-nums">{formatINR(data?.owedToPaise ?? 0)}</p>
-            }
-            {!isLoading && (data?.owedToYou.length ?? 0) > 0 && (
-              <p className="text-xs text-muted mt-0.5">from {data!.owedToYou.length} {data!.owedToYou.length === 1 ? 'person' : 'people'}</p>
-            )}
-          </div>
-
-          {/* You owe */}
-          <div className="rounded-lg p-3 bg-[rgb(var(--color-negative)/0.08)]" aria-label="Amount you owe">
-            <div className="flex items-center gap-1.5 mb-1">
-              <ArrowUpRight size={14} className="text-[rgb(var(--color-negative))]" aria-hidden="true" />
-              <span className="text-xs text-muted">You owe</span>
-            </div>
-            {isLoading
-              ? <div className="skeleton h-6 w-20" aria-hidden="true" />
-              : <p className="text-lg font-semibold text-[rgb(var(--color-negative))] tabular-nums">{formatINR(data?.owingPaise ?? 0)}</p>
-            }
-            {!isLoading && (data?.youOwe.length ?? 0) > 0 && (
-              <p className="text-xs text-muted mt-0.5">to {data!.youOwe.length} {data!.youOwe.length === 1 ? 'person' : 'people'}</p>
-            )}
           </div>
         </div>
-      </div>
+      )}
+
+      {/* Settled up summary for empty state placeholder */}
+      {isLoading && (
+        <div className="card mb-4" aria-label="Loading balance">
+          <div className="text-center py-2">
+            <div className="skeleton h-10 w-36 mx-auto mb-2" aria-hidden="true" />
+            <div className="skeleton h-4 w-48 mx-auto" aria-hidden="true" />
+          </div>
+        </div>
+      )}
 
       {/* Who you need to pay */}
       {!isLoading && (data?.youOwe.length ?? 0) > 0 && (

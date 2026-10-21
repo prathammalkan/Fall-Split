@@ -28,6 +28,10 @@ export function AuthCallbackPage() {
     }
 
     const getDestination = (): string => {
+      const queryRedirect = searchParams.get('redirect');
+      if (queryRedirect && queryRedirect.startsWith('/') && !queryRedirect.startsWith('//')) {
+        return queryRedirect;
+      }
       try {
         const stored = sessionStorage.getItem('post_auth_redirect');
         if (stored) {

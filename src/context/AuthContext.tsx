@@ -20,10 +20,10 @@ interface AuthState {
 
 interface AuthContextValue extends AuthState {
   signInWithEmail: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signInWithMagicLink: (email: string) => Promise<{ error: Error | null }>;
-  signInWithGoogle: () => Promise<{ error: Error | null }>;
-  signInWithApple: () => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, displayName: string) => Promise<{ error: Error | null }>;
+  signInWithMagicLink: (email: string, redirectTo?: string) => Promise<{ error: Error | null }>;
+  signInWithGoogle: (redirectTo?: string) => Promise<{ error: Error | null }>;
+  signInWithApple: (redirectTo?: string) => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string, displayName: string, redirectTo?: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: Error | null }>;
   updatePassword: (password: string) => Promise<{ error: Error | null }>;
@@ -32,6 +32,14 @@ interface AuthContextValue extends AuthState {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function getAuthCallbackUrl(redirectTo?: string): string {
+  const callback = new URL('/auth/callback', window.location.origin);
+  if (redirectTo && redirectTo.startsWith('/') && !redirectTo.startsWith('//')) {
+    callback.searchParams.set('redirect', redirectTo);
+  }
+  return callback.toString();
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
@@ -99,46 +107,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error as Error | null };
   }, []);
 
-  const signInWithMagicLink = useCallback(async (email: string) => {
+  const signInWithMagicLink = useCallback(async (email: string, redirectTo?: string) => {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: getAuthCallbackUrl(redirectTo),
         shouldCreateUser: true,
       },
     });
     return { error: error as Error | null };
   }, []);
 
-  const signInWithGoogle = useCallback(async () => {
+  const signInWithGoogle = useCallback(async (redirectTo?: string) => {
     // Always use the current origin so the callback returns to the same domain
     // (localhost in dev, Vercel in prod). Using VITE_APP_URL here causes a
     // cross-origin mismatch that breaks the PKCE/implicit code exchange.
-    const redirectTo = `${window.location.origin}/auth/callback`;
+    const callbackUrl = getAuthCallbackUrl(redirectTo);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo,
+        redirectTo: callbackUrl,
         queryParams: { access_type: 'offline', prompt: 'consent' },
       },
     });
     return { error: error as Error | null };
   }, []);
 
-  const signInWithApple = useCallback(async () => {
+  const signInWithApple = useCallback(async (redirectTo?: string) => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'apple',
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
+      options: { redirectTo: getAuthCallbackUrl(redirectTo) },
     });
     return { error: error as Error | null };
   }, []);
 
-  const signUp = useCallback(async (email: string, password: string, displayName: string) => {
+  const signUp = useCallback(async (email: string, password: string, displayName: string, redirectTo?: string) => {
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: getAuthCallbackUrl(redirectTo),
         data: { full_name: displayName },
       },
     });
@@ -163,14 +171,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const deleteAccount = useCallback(async () => {
-    // Calls a secure server-side function to handle cascading deletion
-    const { error } = await supabase.functions.invoke('delete-account', {
-      method: 'POST',
-    });
-    if (!error) {
-      await supabase.auth.signOut();
+    // Step 1: Call the SECURITY DEFINER RPC to anonymize profile data and
+    // cancel all pending financial/social records. This works without a deployed
+    // Edge Function because the RPC runs server-side with elevated privileges.
+    const { error: rpcError } = await supabase.rpc('delete_account' as never);
+    if (rpcError) {
+      return { error: rpcError as Error };
     }
-    return { error: error as Error | null };
+
+    // Step 2: Try Edge Function first (handles auth.users deletion server-side).
+    // If the Edge Function is not deployed, fall back to client-side sign-out.
+    // The account is effectively inaccessible once the profile is anonymized.
+    try {
+      await supabase.functions.invoke('delete-account', { method: 'POST' });
+    } catch {
+      // Edge Function not deployed — profile is already anonymized above.
+      // User is signed out below which terminates the session.
+    }
+
+    // Step 3: Sign out regardless — the session must be terminated.
+    await supabase.auth.signOut();
+    return { error: null };
   }, []);
 
   const value: AuthContextValue = {

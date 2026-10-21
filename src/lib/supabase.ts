@@ -31,9 +31,9 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
 export type SupabaseClient = typeof supabase;
 
 /**
- * Untyped Supabase client for mutations (insert/update) where the typed client
- * produces `never` due to strict Update type inference conflicts.
- * Only use for write operations; use `supabase` for reads.
+ * Untyped client for mutations and migration-backed RPCs that are not yet
+ * represented correctly by the generated Supabase schema types.
+ * Prefer the typed client for ordinary reads.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const db = supabase as any;

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -28,6 +28,7 @@ type FormData = z.infer<typeof schema>;
 export function RegisterPage() {
   const { signUp } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [registered, setRegistered] = useState(false);
@@ -39,7 +40,16 @@ export function RegisterPage() {
 
   const onSubmit = async (data: FormData) => {
     setError(null);
-    const { error } = await signUp(data.email, data.password, data.displayName);
+    const rawRedirect = searchParams.get('redirect');
+    const redirectTo = rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/';
+    if (redirectTo !== '/') {
+      try {
+        sessionStorage.setItem('post_auth_redirect', redirectTo);
+      } catch {
+        // The invite remains available in the original link if storage is unavailable.
+      }
+    }
+    const { error } = await signUp(data.email, data.password, data.displayName, redirectTo);
     if (error) {
       // Generic to avoid enumeration
       setError('Could not create account. Try a different email.');

@@ -1,21 +1,11 @@
-import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/supabase';
 import { LoadingScreen } from '../../components/ui/LoadingScreen';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Logo } from '../../components/brand/Logo';
 import { Spinner } from '../../components/ui/Spinner';
-
-interface InvitationTokenData {
-  id: string;
-  type: string;
-  use_count: number;
-  max_uses: number;
-  expires_at: string | null;
-  revoked_at: string | null;
-  creator: { display_name: string } | null;
-}
 
 export function InvitePage() {
   const { token } = useParams<{ token: string }>();
@@ -28,37 +18,46 @@ export function InvitePage() {
   const [accepting, setAccepting] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const loadInvite = async () => {
-    if (!token) { setError('Invalid invitation link.'); setLoading(false); return; }
-    const { data: rawData, error: err } = await supabase
-      .from('invitation_tokens')
-      .select('id, type, use_count, max_uses, expires_at, revoked_at, creator:creator_id (display_name)')
-      .eq('token', token)
-      .single();
+  const loadInvite = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    if (!token || !/^[a-zA-Z0-9_-]{16,128}$/.test(token)) {
+      setError('Invalid invitation link.');
+      setLoading(false);
+      return;
+    }
+    try {
+      const previewResult = await db.rpc('get_invitation_preview', { p_token: token }) as {
+        data: { type?: string; creator_name?: string } | null;
+        error: { message: string } | null;
+      };
+      const { data, error: previewError } = previewResult;
+      if (previewError) throw previewError;
+      const preview = data;
+      if (!preview || !preview.type) {
+        setError('This invitation is invalid, expired, revoked, or has reached its use limit.');
+        return;
+      }
+      setCreatorName(preview.creator_name ?? 'Someone');
+      setInviteType(preview.type);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not check this invitation. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
 
-    if (err || !rawData) { setError('This invitation is invalid or has already been used.'); setLoading(false); return; }
-    const data = rawData as unknown as InvitationTokenData;
-
-    if (data.revoked_at) { setError('This invitation has been revoked.'); setLoading(false); return; }
-    if (data.expires_at && new Date(data.expires_at) < new Date()) { setError('This invitation has expired.'); setLoading(false); return; }
-    if (data.use_count >= data.max_uses) { setError('This invitation has reached its maximum uses.'); setLoading(false); return; }
-
-    setCreatorName(data.creator?.display_name ?? 'Someone');
-    setInviteType(data.type);
-    setLoading(false);
-  };
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void loadInvite(); }, [token]);
+  useEffect(() => { void loadInvite(); }, [loadInvite]);
 
   const acceptInvite = async () => {
     if (!user || !token) return;
     setAccepting(true);
     setError(null);
     try {
-      // Use the secure server-side RPC function for safe invitation acceptance
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rpcResult = await (supabase as any).rpc('accept_invitation', { p_token: token }) as { data: { success?: boolean; error?: string; type?: string; groupId?: string } | null; error: { message: string } | null };
+      const rpcResult = await db.rpc('accept_invitation', { p_token: token }) as {
+        data: { success?: boolean; error?: string; type?: string; groupId?: string } | null;
+        error: { message: string } | null;
+      };
       const { data, error: rpcErr } = rpcResult;
       if (rpcErr) {
         setError(rpcErr.message || 'Failed to accept invitation.');
@@ -78,6 +77,8 @@ export function InvitePage() {
           navigate('/friends', { replace: true });
         }
       }, 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to accept invitation. Please try again.');
     } finally {
       setAccepting(false);
     }
@@ -112,16 +113,20 @@ export function InvitePage() {
               {inviteType === 'group' ? 'Accept to join their group.' : 'Accept to become friends and split expenses together.'}
             </p>
             {!user ? (
-              <button
-                onClick={() => {
-                  // Accept hex tokens (client-generated) and base64url tokens (server-generated)
-                  const safeToken = /^[a-zA-Z0-9_-]{16,128}$/.test(token ?? '') ? token : '';
-                  navigate(`/login?redirect=/invite/${safeToken}`);
-                }}
-                className="btn-primary w-full"
-              >
-                Sign in to accept
-              </button>
+              <>
+                <Link
+                  to={`/login?redirect=${encodeURIComponent(`/invite/${token}`)}`}
+                  className="btn-primary w-full"
+                >
+                  Sign in to accept
+                </Link>
+                <Link
+                  to={`/register?redirect=${encodeURIComponent(`/invite/${token}`)}`}
+                  className="btn-secondary w-full mt-2"
+                >
+                  Create an account
+                </Link>
+              </>
             ) : (
               <button
                 onClick={() => void acceptInvite()}

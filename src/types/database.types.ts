@@ -498,9 +498,25 @@ export type Database = {
         Args: { p_token: string };
         Returns: { success?: boolean; error?: string; type?: string; friendId?: string; groupId?: string };
       };
+      get_invitation_preview: {
+        Args: { p_token: string };
+        Returns: Json;
+      };
       get_friend_balances: {
         Args: Record<string, never>;
         Returns: { other_user_id: string; net_paise: number; owed_to_paise: number; owing_paise: number }[];
+      };
+      propose_settlement: {
+        Args: { p_recipient_id: string; p_amount_paise: number; p_idempotency_key: string };
+        Returns: string;
+      };
+      respond_to_settlement: {
+        Args: { p_settlement_id: string; p_action: string };
+        Returns: string;
+      };
+      cancel_settlement: {
+        Args: { p_settlement_id: string };
+        Returns: string;
       };
     };
     Enums: {

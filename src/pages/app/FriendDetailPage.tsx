@@ -23,6 +23,7 @@ export function FriendDetailPage() {
   const [settleError, setSettleError] = useState<string | null>(null);
   const [showSettle, setShowSettle] = useState(false);
   const [balanceLoaded, setBalanceLoaded] = useState(false);
+  const [settlementKey, setSettlementKey] = useState('');
 
   const load = useCallback(async () => {
     if (!friendId || !user) return;
@@ -40,56 +41,13 @@ export function FriendDetailPage() {
 
       // Use the server-side RPC for accurate multi-payer balance
       const { data: balances, error: rpcErr } = await supabase.rpc('get_friend_balances');
-      if (!rpcErr && balances) {
-        const rawBalances = balances as { other_user_id: string; net_paise: number }[];
-        const friendBal = rawBalances.find(b => b.other_user_id === friendId);
-        setNetPaise(friendBal ? Number(friendBal.net_paise) : 0);
-        setBalanceLoaded(true);
-        return;
-      }
-
-      // Fallback: direct query (less accurate for multi-payer, but better than nothing)
-      // net_paise > 0 = friend owes us, < 0 = we owe friend
-      interface ShareRow { expense_id: string; amount_paise: number; expenses: { id: string; status: string; expense_payers: { user_id: string; amount_paise: number }[] } | null }
-      interface PaidRow { expense_id: string; amount_paise: number; expenses: { id: string; status: string; expense_shares: { user_id: string; amount_paise: number }[] } | null }
-      interface SettlementRow { payer_id: string; recipient_id: string; amount_paise: number; status: string }
-
-      const [{ data: shares }, { data: paid }, { data: settlements }] = await Promise.all([
-        supabase.from('expense_shares').select('expense_id, amount_paise, expenses (id, status, expense_payers (user_id, amount_paise))').eq('user_id', user.id),
-        supabase.from('expense_payers').select('expense_id, amount_paise, expenses (id, status, expense_shares (user_id, amount_paise))').eq('user_id', user.id),
-        supabase.from('settlements').select('payer_id, recipient_id, amount_paise, status').or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`).eq('status', 'confirmed'),
-      ]);
-
-      let net = 0;
-      // Expenses where we have a share: find if friend was a payer → we owe friend
-      for (const s of (shares ?? []) as unknown as ShareRow[]) {
-        const exp = s.expenses;
-        if (!exp || exp.status !== 'active') continue;
-        for (const payer of exp.expense_payers) {
-          if (payer.user_id === friendId) net -= s.amount_paise;
-        }
-      }
-      // Expenses where we paid: find if friend has a share → friend owes us
-      for (const p of (paid ?? []) as unknown as PaidRow[]) {
-        const exp = p.expenses;
-        if (!exp || exp.status !== 'active') continue;
-        for (const share of exp.expense_shares) {
-          if (share.user_id === friendId) net += share.amount_paise;
-        }
-      }
-      // Confirmed settlements: we paid friend reduces our debt; friend paid us reduces their debt
-      for (const s of (settlements ?? []) as unknown as SettlementRow[]) {
-        if (s.payer_id === user.id && s.recipient_id === friendId) {
-          // We paid friend: our debt to friend decreases → net goes up (we owe less / owed more)
-          net += s.amount_paise;
-        }
-        if (s.payer_id === friendId && s.recipient_id === user.id) {
-          // Friend paid us: friend's debt decreases → net goes down
-          net -= s.amount_paise;
-        }
-      }
-      setNetPaise(net);
+      if (rpcErr) throw rpcErr;
+      const balanceRows = (balances ?? []) as { other_user_id: string; net_paise: number }[];
+      const friendBal = balanceRows.find(b => b.other_user_id === friendId);
+      setNetPaise(friendBal ? Number(friendBal.net_paise) : 0);
       setBalanceLoaded(true);
+    } catch {
+      setError('Could not load this balance. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -136,17 +94,18 @@ export function FriendDetailPage() {
     }
 
     setSettling(true);
-    const { error: insErr } = await db.from('settlements').insert({
-      payer_id: payerId,
-      recipient_id: recipientId,
-      amount_paise: paise,
-      currency: 'INR',
-      status: 'proposed',
+    const idempotencyKey = settlementKey || crypto.randomUUID();
+    setSettlementKey(idempotencyKey);
+    const { error: insErr } = await db.rpc('propose_settlement', {
+      p_recipient_id: recipientId,
+      p_amount_paise: paise,
+      p_idempotency_key: idempotencyKey,
     });
     setSettling(false);
     if (insErr) { setSettleError('Could not create settlement. Please try again.'); return; }
     setShowSettle(false);
     setSettleAmount('');
+    setSettlementKey('');
     navigate('/settlements');
   };
 
@@ -248,7 +207,7 @@ export function FriendDetailPage() {
             {settleError && <ErrorMessage message={settleError} />}
 
             <div className="flex gap-2">
-              <button onClick={() => { setShowSettle(false); setSettleAmount(''); setSettleError(null); }} className="btn-secondary flex-1">Cancel</button>
+              <button onClick={() => { setShowSettle(false); setSettleAmount(''); setSettleError(null); setSettlementKey(''); }} className="btn-secondary flex-1">Cancel</button>
               <button onClick={() => void proposeSettlement()} className="btn-primary flex-1" disabled={settling}>
                 {settling ? <Spinner size={16} /> : null} Send proposal
               </button>
