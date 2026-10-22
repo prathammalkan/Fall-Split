@@ -19,28 +19,34 @@ export function SearchPage() {
   const [sent, setSent] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const search = useCallback(async (q: string) => {
-    if (!q.trim() || q.length < 2) { setResults([]); return; }
-    setSearching(true);
-    try {
-      // Only select public-safe fields — username prefix match only (not display_name)
-      // to avoid leaking users who have sensitive display names
-      const { data } = await supabase
-        .from('profiles')
-        .select('id, username, display_name, avatar_url')
-        .is('deleted_at', null)
-        .ilike('username', `${q}%`)
-        .neq('id', user?.id ?? '')
-        .limit(15);
-      setResults((data ?? []) as PublicProfile[]);
-    } finally {
-      setSearching(false);
-    }
-  }, [user?.id]);
+  const search = useCallback(
+    async (q: string) => {
+      if (!q.trim() || q.length < 2) {
+        setResults([]);
+        return;
+      }
+      setSearching(true);
+      try {
+        // The view exposes only fields approved for profile discovery.
+        const { data } = await supabase
+          .from('discoverable_profiles')
+          .select('id, username, display_name, avatar_url')
+          .ilike('username', `${q}%`)
+          .neq('id', user?.id ?? '')
+          .limit(15);
+        setResults((data ?? []) as PublicProfile[]);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [user?.id]
+  );
 
   // Debounce: wait 300ms after last keystroke before searching
   useEffect(() => {
-    const t = setTimeout(() => { void search(query); }, 300);
+    const t = setTimeout(() => {
+      void search(query);
+    }, 300);
     return () => clearTimeout(t);
   }, [query, search]);
 
@@ -49,9 +55,13 @@ export function SearchPage() {
     setActionError(null);
     setSending(receiverId);
     try {
-      const { error } = await db.from('friend_requests').insert({ sender_id: user.id, receiver_id: receiverId });
+      const { error } = await db
+        .from('friend_requests')
+        .insert({ sender_id: user.id, receiver_id: receiverId });
       if (error) {
-        setActionError('Could not send request. You may already have a connection with this person.');
+        setActionError(
+          'Could not send request. You may already have a connection with this person.'
+        );
         return;
       }
       setSent((prev) => new Set(prev).add(receiverId));
@@ -65,7 +75,7 @@ export function SearchPage() {
       <PageHeader title="Search users" back />
       <div className="page-content pt-4">
         <div className="relative mb-4">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <Search size={16} className="text-muted absolute top-1/2 left-3 -translate-y-1/2" />
           <input
             type="search"
             value={query}
@@ -76,31 +86,35 @@ export function SearchPage() {
             autoComplete="off"
             aria-label="Search users by username"
           />
-          {searching && <div className="absolute right-3 top-1/2 -translate-y-1/2"><Spinner size={16} /></div>}
+          {searching && (
+            <div className="absolute top-1/2 right-3 -translate-y-1/2">
+              <Spinner size={16} />
+            </div>
+          )}
         </div>
 
         {actionError && (
-          <p className="text-xs text-[rgb(var(--color-negative))] mb-3 px-1">{actionError}</p>
+          <p className="mb-3 px-1 text-xs text-[rgb(var(--color-negative))]">{actionError}</p>
         )}
 
         {results.length > 0 && (
-          <div className="card p-0 overflow-hidden">
+          <div className="card overflow-hidden p-0">
             {results.map((p) => (
               <div key={p.id} className="list-item">
                 <Avatar src={p.avatar_url} name={p.display_name} size={36} />
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-primary">{p.display_name}</p>
-                  <p className="text-xs text-muted">@{p.username}</p>
+                  <p className="text-primary text-sm font-medium">{p.display_name}</p>
+                  <p className="text-muted text-xs">@{p.username}</p>
                 </div>
                 {sent.has(p.id) ? (
-                  <span className="flex items-center gap-1 text-xs text-[rgb(var(--color-positive))] font-medium">
+                  <span className="flex items-center gap-1 text-xs font-medium text-[rgb(var(--color-positive))]">
                     <Check size={14} /> Sent
                   </span>
                 ) : (
                   <button
                     onClick={() => void sendRequest(p.id)}
                     disabled={sending === p.id}
-                    className="btn-secondary py-1.5 px-3 text-xs flex items-center gap-1"
+                    className="btn-secondary flex items-center gap-1 px-3 py-1.5 text-xs"
                     aria-label={`Send friend request to ${p.display_name}`}
                   >
                     {sending === p.id ? <Spinner size={12} /> : <UserPlus size={14} />}
@@ -112,7 +126,9 @@ export function SearchPage() {
           </div>
         )}
         {results.length === 0 && query.length >= 2 && !searching && (
-          <p className="text-center text-sm text-muted py-8">No users found for &ldquo;{query}&rdquo;</p>
+          <p className="text-muted py-8 text-center text-sm">
+            No users found for &ldquo;{query}&rdquo;
+          </p>
         )}
       </div>
     </div>

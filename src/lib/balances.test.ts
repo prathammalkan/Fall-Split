@@ -1,6 +1,184 @@
 import { describe, it, expect } from 'vitest';
-import { calculatePairBalances, simplifyDebts, aggregateBalance } from './balances';
+import {
+  allocateExpensePayerShares,
+  calculatePairBalances,
+  simplifyDebts,
+  aggregateBalance,
+} from './balances';
 import type { RawLedgerEntry, SettledEntry } from './balances';
+
+describe('allocateExpensePayerShares', () => {
+  const positivePartitions = (total: number, count: number): number[][] => {
+    if (count === 1) return [[total]];
+    const results: number[][] = [];
+    for (let first = 1; first <= total - count + 1; first++) {
+      for (const rest of positivePartitions(total - first, count - 1)) {
+        results.push([first, ...rest]);
+      }
+    }
+    return results;
+  };
+
+  it('allocates multiple equal shares proportionally across ₹60/₹40 payers', () => {
+    const result = allocateExpensePayerShares(
+      [
+        { userId: 'alice', amountPaise: 5000 },
+        { userId: 'bob', amountPaise: 5000 },
+      ],
+      [
+        { userId: 'alice', amountPaise: 6000 },
+        { userId: 'bob', amountPaise: 4000 },
+      ]
+    );
+
+    expect(
+      result.filter((row) => row.participantUserId === 'alice').map((row) => row.amountPaise)
+    ).toEqual([3000, 2000]);
+    expect(
+      result.filter((row) => row.participantUserId === 'bob').map((row) => row.amountPaise)
+    ).toEqual([3000, 2000]);
+    expect(
+      result
+        .filter((row) => row.payerUserId === 'alice')
+        .reduce((sum, row) => sum + row.amountPaise, 0)
+    ).toBe(6000);
+    expect(
+      result
+        .filter((row) => row.payerUserId === 'bob')
+        .reduce((sum, row) => sum + row.amountPaise, 0)
+    ).toBe(4000);
+    const pairBalances = calculatePairBalances(
+      result.map((row) => ({
+        payerUserId: row.payerUserId,
+        participantUserId: row.participantUserId,
+        amountPaise: row.amountPaise,
+      })),
+      []
+    );
+    expect(
+      pairBalances.find((row) => row.userId === 'alice' && row.otherUserId === 'bob')?.netPaise
+    ).toBe(1000);
+  });
+
+  it('keeps Bob owing Alice ₹50 on a ₹100 equal split', () => {
+    const allocation = allocateExpensePayerShares(
+      [
+        { userId: 'alice', amountPaise: 5000 },
+        { userId: 'bob', amountPaise: 5000 },
+      ],
+      [{ userId: 'alice', amountPaise: 10000 }]
+    );
+
+    const balances = calculatePairBalances(
+      allocation.map((row) => ({
+        payerUserId: row.payerUserId,
+        participantUserId: row.participantUserId,
+        amountPaise: row.amountPaise,
+      })),
+      []
+    );
+    expect(
+      balances.find((row) => row.userId === 'alice' && row.otherUserId === 'bob')?.netPaise
+    ).toBe(5000);
+  });
+
+  it('conserves both participant shares and payer totals when every cell rounds fractionally', () => {
+    const allocation = allocateExpensePayerShares(
+      [
+        { userId: 'alice', amountPaise: 2 },
+        { userId: 'bob', amountPaise: 2 },
+        { userId: 'carol', amountPaise: 2 },
+      ],
+      [
+        { userId: 'payer-a', amountPaise: 2 },
+        { userId: 'payer-b', amountPaise: 2 },
+        { userId: 'payer-c', amountPaise: 2 },
+      ]
+    );
+
+    for (const userId of ['alice', 'bob', 'carol']) {
+      expect(
+        allocation
+          .filter((row) => row.participantUserId === userId)
+          .reduce((sum, row) => sum + row.amountPaise, 0)
+      ).toBe(2);
+    }
+    for (const userId of ['payer-a', 'payer-b', 'payer-c']) {
+      expect(
+        allocation
+          .filter((row) => row.payerUserId === userId)
+          .reduce((sum, row) => sum + row.amountPaise, 0)
+      ).toBe(2);
+    }
+  });
+
+  it('keeps every allocated cell within its proportional floor/ceiling for small ledgers', () => {
+    for (let total = 1; total <= 7; total++) {
+      for (let shareCount = 1; shareCount <= Math.min(3, total); shareCount++) {
+        for (let payerCount = 1; payerCount <= Math.min(3, total); payerCount++) {
+          for (const shareAmounts of positivePartitions(total, shareCount)) {
+            for (const payerAmounts of positivePartitions(total, payerCount)) {
+              const allocations = allocateExpensePayerShares(
+                shareAmounts.map((amountPaise, index) => ({ userId: `s${index}`, amountPaise })),
+                payerAmounts.map((amountPaise, index) => ({ userId: `p${index}`, amountPaise }))
+              );
+
+              shareAmounts.forEach((shareAmount, row) => {
+                const actual = allocations
+                  .filter((allocation) => allocation.participantUserId === `s${row}`)
+                  .reduce((sum, allocation) => sum + allocation.amountPaise, 0);
+                expect(actual).toBe(shareAmount);
+                payerAmounts.forEach((payerAmount, column) => {
+                  const cell = allocations.find(
+                    (allocation) =>
+                      allocation.participantUserId === `s${row}` &&
+                      allocation.payerUserId === `p${column}`
+                  )!.amountPaise;
+                  const numerator = shareAmount * payerAmount;
+                  const lower = Math.floor(numerator / total);
+                  expect(cell).toBeGreaterThanOrEqual(lower);
+                  expect(cell).toBeLessThanOrEqual(Math.ceil(numerator / total));
+                });
+              });
+
+              payerAmounts.forEach((payerAmount, column) => {
+                expect(
+                  allocations
+                    .filter((allocation) => allocation.payerUserId === `p${column}`)
+                    .reduce((sum, allocation) => sum + allocation.amountPaise, 0)
+                ).toBe(payerAmount);
+              });
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('rejects invalid shares and duplicate or invalid payers', () => {
+    expect(() =>
+      allocateExpensePayerShares(
+        [{ userId: 'a', amountPaise: -1 }],
+        [{ userId: 'b', amountPaise: 1 }]
+      )
+    ).toThrow();
+    expect(() =>
+      allocateExpensePayerShares(
+        [{ userId: 'a', amountPaise: 2 }],
+        [{ userId: 'b', amountPaise: 1 }]
+      )
+    ).toThrow();
+    expect(() =>
+      allocateExpensePayerShares(
+        [{ userId: 'a', amountPaise: 1 }],
+        [
+          { userId: 'b', amountPaise: 1 },
+          { userId: 'b', amountPaise: 0 },
+        ]
+      )
+    ).toThrow();
+  });
+});
 
 describe('calculatePairBalances', () => {
   it('computes simple A→B balance', () => {
@@ -53,13 +231,13 @@ describe('calculatePairBalances', () => {
       { payerUserId: 'A', participantUserId: 'A', amountPaise: 2500 },
       { payerUserId: 'A', participantUserId: 'B', amountPaise: 2500 },
     ];
-    const settled: SettledEntry[] = [
-      { payerUserId: 'B', recipientUserId: 'A', amountPaise: 2500 },
-    ];
+    const settled: SettledEntry[] = [{ payerUserId: 'B', recipientUserId: 'A', amountPaise: 2500 }];
 
-    expect(calculatePairBalances(ledger, []).find(
-      (balance) => balance.userId === 'A' && balance.otherUserId === 'B'
-    )?.netPaise).toBe(2500);
+    expect(
+      calculatePairBalances(ledger, []).find(
+        (balance) => balance.userId === 'A' && balance.otherUserId === 'B'
+      )?.netPaise
+    ).toBe(2500);
     expect(calculatePairBalances(ledger, settled)).toHaveLength(0);
   });
 
@@ -67,9 +245,7 @@ describe('calculatePairBalances', () => {
     const ledger: RawLedgerEntry[] = [
       { payerUserId: 'A', participantUserId: 'B', amountPaise: 5000 },
     ];
-    const settled: SettledEntry[] = [
-      { payerUserId: 'B', recipientUserId: 'A', amountPaise: 2500 },
-    ];
+    const settled: SettledEntry[] = [{ payerUserId: 'B', recipientUserId: 'A', amountPaise: 2500 }];
     const aBalance = calculatePairBalances(ledger, settled).find(
       (balance) => balance.userId === 'A' && balance.otherUserId === 'B'
     );

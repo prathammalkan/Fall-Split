@@ -27,7 +27,7 @@ export function InvitePage() {
       return;
     }
     try {
-      const previewResult = await db.rpc('get_invitation_preview', { p_token: token }) as {
+      const previewResult = (await db.rpc('get_invitation_preview', { p_token: token })) as {
         data: { type?: string; creator_name?: string } | null;
         error: { message: string } | null;
       };
@@ -41,20 +41,24 @@ export function InvitePage() {
       setCreatorName(preview.creator_name ?? 'Someone');
       setInviteType(preview.type);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not check this invitation. Please try again.');
+      setError(
+        err instanceof Error ? err.message : 'Could not check this invitation. Please try again.'
+      );
     } finally {
       setLoading(false);
     }
   }, [token]);
 
-  useEffect(() => { void loadInvite(); }, [loadInvite]);
+  useEffect(() => {
+    void loadInvite();
+  }, [loadInvite]);
 
   const acceptInvite = async () => {
     if (!user || !token) return;
     setAccepting(true);
     setError(null);
     try {
-      const rpcResult = await db.rpc('accept_invitation', { p_token: token }) as {
+      const rpcResult = (await db.rpc('accept_invitation', { p_token: token })) as {
         data: { success?: boolean; error?: string; type?: string; groupId?: string } | null;
         error: { message: string } | null;
       };
@@ -78,7 +82,9 @@ export function InvitePage() {
         }
       }, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to accept invitation. Please try again.');
+      setError(
+        err instanceof Error ? err.message : 'Failed to accept invitation. Please try again.'
+      );
     } finally {
       setAccepting(false);
     }
@@ -87,30 +93,34 @@ export function InvitePage() {
   if (loading) return <LoadingScreen />;
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
+    <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
         <Logo size={48} className="mx-auto mb-6" />
         {success ? (
           <>
-            <div className="w-16 h-16 rounded-full bg-[rgb(var(--color-positive)/0.1)] flex items-center justify-center mx-auto mb-4">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[rgb(var(--color-positive)/0.1)]">
               <span className="text-3xl">🎉</span>
             </div>
-            <h1 className="text-xl font-bold text-primary mb-2">You're connected!</h1>
+            <h1 className="text-primary mb-2 text-xl font-bold">You're connected!</h1>
             <p className="text-secondary">Redirecting you now…</p>
           </>
         ) : error ? (
           <>
             <ErrorMessage message={error} />
-            <button onClick={() => navigate('/')} className="btn-secondary w-full mt-4">Go home</button>
+            <button onClick={() => navigate('/')} className="btn-secondary mt-4 w-full">
+              Go home
+            </button>
           </>
         ) : (
           <>
-            <h1 className="text-xl font-bold text-primary mb-2">You're invited!</h1>
+            <h1 className="text-primary mb-2 text-xl font-bold">You're invited!</h1>
             <p className="text-secondary mb-2">
               <strong>{creatorName}</strong> invited you to connect on Fall Split.
             </p>
-            <p className="text-sm text-muted mb-6">
-              {inviteType === 'group' ? 'Accept to join their group.' : 'Accept to become friends and split expenses together.'}
+            <p className="text-muted mb-6 text-sm">
+              {inviteType === 'group'
+                ? 'Accept to join their group.'
+                : 'Accept to become friends and split expenses together.'}
             </p>
             {!user ? (
               <>
@@ -122,7 +132,7 @@ export function InvitePage() {
                 </Link>
                 <Link
                   to={`/register?redirect=${encodeURIComponent(`/invite/${token}`)}`}
-                  className="btn-secondary w-full mt-2"
+                  className="btn-secondary mt-2 w-full"
                 >
                   Create an account
                 </Link>

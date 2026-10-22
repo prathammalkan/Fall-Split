@@ -29,8 +29,9 @@ interface Settlement {
   rejected_at: string | null;
   created_at: string;
   updated_at: string;
-  payer: { id: string; display_name: string; avatar_url: string | null; upi_id?: string | null };
-  recipient: { id: string; display_name: string; avatar_url: string | null; upi_id?: string | null };
+  payer: { id: string; display_name: string; avatar_url: string | null };
+  recipient: { id: string; display_name: string; avatar_url: string | null };
+  recipient_upi_id: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -65,27 +66,51 @@ export function SettlementsPage() {
     setLoading(true);
     const { data, error: fetchErr } = await supabase
       .from('settlements')
-      .select(`*, payer:payer_id (id, display_name, avatar_url, upi_id), recipient:recipient_id (id, display_name, avatar_url, upi_id)`)
+      .select(
+        `*, payer:payer_id (id, display_name, avatar_url), recipient:recipient_id (id, display_name, avatar_url)`
+      )
       .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
       .order('created_at', { ascending: false });
     if (fetchErr) {
       setError('Could not load settlements. Please try again.');
     } else {
-      setSettlements((data ?? []) as unknown as Settlement[]);
+      const { data: upiData, error: upiError } = await db.rpc('get_settlement_recipient_upis');
+      if (upiError) {
+        setError('Could not load settlement payment details. Please try again.');
+      } else {
+        const upiRows = (upiData ?? []) as { settlement_id: string; upi_id: string | null }[];
+        const upiBySettlementId = new Map(
+          (upiRows ?? []).map((row) => [row.settlement_id, row.upi_id])
+        );
+        const settlementRows = (data ?? []) as unknown as Settlement[];
+        setSettlements(
+          settlementRows.map((row) => ({
+            ...row,
+            recipient_upi_id: upiBySettlementId.get(row.id) ?? null,
+          }))
+        );
+      }
     }
     setLoading(false);
   }, [user]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const pendingIncoming = settlements.filter(
-    (settlement) => settlement.recipient_id === user?.id && (settlement.status === 'proposed' || settlement.status === 'pending')
+    (settlement) =>
+      settlement.recipient_id === user?.id &&
+      (settlement.status === 'proposed' || settlement.status === 'pending')
   );
-  const modalSettlement = pendingIncoming.find((settlement) => !dismissedPendingIds.includes(settlement.id)) ?? null;
+  const modalSettlement =
+    pendingIncoming.find((settlement) => !dismissedPendingIds.includes(settlement.id)) ?? null;
 
   const closePendingModal = () => {
     if (!modalSettlement) return;
-    setDismissedPendingIds((prev) => prev.includes(modalSettlement.id) ? prev : [...prev, modalSettlement.id]);
+    setDismissedPendingIds((prev) =>
+      prev.includes(modalSettlement.id) ? prev : [...prev, modalSettlement.id]
+    );
   };
 
   const handleIncomingAction = async (id: string, action: 'confirm' | 'reject') => {
@@ -94,7 +119,7 @@ export function SettlementsPage() {
     } else {
       await rejectSettlement(id);
     }
-    setDismissedPendingIds((prev) => prev.includes(id) ? prev : [...prev, id]);
+    setDismissedPendingIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
   };
 
   const confirmSettlement = async (id: string) => {
@@ -163,9 +188,15 @@ export function SettlementsPage() {
           variant="incoming"
           loading={actionLoading === modalSettlement.id}
           onClose={closePendingModal}
-          onConfirm={() => { void handleIncomingAction(modalSettlement.id, 'confirm'); }}
-          onReject={() => { void handleIncomingAction(modalSettlement.id, 'reject'); }}
-          onReviewDetails={() => { closePendingModal(); }}
+          onConfirm={() => {
+            void handleIncomingAction(modalSettlement.id, 'confirm');
+          }}
+          onReject={() => {
+            void handleIncomingAction(modalSettlement.id, 'reject');
+          }}
+          onReviewDetails={() => {
+            closePendingModal();
+          }}
           confirmLabel="Confirm received"
           rejectLabel="Not received"
         />
@@ -177,7 +208,7 @@ export function SettlementsPage() {
         actions={
           <button
             onClick={() => navigate('/friends')}
-            className="btn-ghost p-2 rounded-full"
+            className="btn-ghost rounded-full p-2"
             aria-label="Settle up with a friend"
             title="Settle up with a friend"
           >
@@ -190,18 +221,27 @@ export function SettlementsPage() {
 
         {pendingIncoming.length > 0 && (
           <div className="card mb-3">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-semibold text-primary">Pending payments</h2>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-primary text-sm font-semibold">Pending payments</h2>
               <span className="badge-pending">{pendingIncoming.length}</span>
             </div>
             <div className="space-y-2">
               {pendingIncoming.slice(0, 3).map((settlement) => (
-                <div key={settlement.id} className="flex items-center justify-between gap-3 rounded-lg bg-[rgb(var(--color-pending)/0.06)] px-2.5 py-2">
+                <div
+                  key={settlement.id}
+                  className="flex items-center justify-between gap-3 rounded-lg bg-[rgb(var(--color-pending)/0.06)] px-2.5 py-2"
+                >
                   <div>
-                    <p className="text-sm font-medium text-primary">{settlement.payer.display_name}</p>
-                    <p className="text-[11px] text-muted">{STATUS_LABELS[settlement.status] ?? settlement.status}</p>
+                    <p className="text-primary text-sm font-medium">
+                      {settlement.payer.display_name}
+                    </p>
+                    <p className="text-muted text-[11px]">
+                      {STATUS_LABELS[settlement.status] ?? settlement.status}
+                    </p>
                   </div>
-                  <p className="text-sm font-semibold text-primary tabular-nums">{formatINR(settlement.amount_paise)}</p>
+                  <p className="text-primary text-sm font-semibold tabular-nums">
+                    {formatINR(settlement.amount_paise)}
+                  </p>
                 </div>
               ))}
             </div>
@@ -209,7 +249,9 @@ export function SettlementsPage() {
         )}
 
         {loading ? (
-          <div className="flex justify-center py-8"><Spinner size={24} /></div>
+          <div className="flex justify-center py-8">
+            <Spinner size={24} />
+          </div>
         ) : settlements.length === 0 ? (
           <EmptyState
             icon={Handshake}
@@ -224,54 +266,67 @@ export function SettlementsPage() {
               const other = isPayer ? s.recipient : s.payer;
               const canConfirm = isRecipient && (s.status === 'proposed' || s.status === 'pending');
               const canCancel = isPayer && (s.status === 'proposed' || s.status === 'pending');
-              const recipientUpi = s.recipient.upi_id;
+              const recipientUpi = s.recipient_upi_id;
               const isLoading = actionLoading === s.id;
 
               return (
                 <div key={s.id} className="card">
-                  <div className="flex items-start gap-3 mb-3">
+                  <div className="mb-3 flex items-start gap-3">
                     <Avatar src={other.avatar_url} name={other.display_name} size={36} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-primary">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-primary text-sm font-medium">
                         {isPayer ? `You → ${other.display_name}` : `${other.display_name} → You`}
                       </p>
-                      <p className="text-xs text-muted">{format(new Date(s.created_at), 'MMM d, yyyy')}</p>
+                      <p className="text-muted text-xs">
+                        {format(new Date(s.created_at), 'MMM d, yyyy')}
+                      </p>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      <p className="text-base font-bold tabular-nums text-primary">{formatINR(s.amount_paise)}</p>
+                    <div className="flex-shrink-0 text-right">
+                      <p className="text-primary text-base font-bold tabular-nums">
+                        {formatINR(s.amount_paise)}
+                      </p>
                       <span className={STATUS_CLASSES[s.status] ?? 'badge-neutral'}>
                         {STATUS_LABELS[s.status] ?? s.status}
                       </span>
                     </div>
                   </div>
 
-                  {s.notes && <p className="text-xs text-muted mb-3 italic">"{s.notes}"</p>}
+                  {s.notes && <p className="text-muted mb-3 text-xs italic">"{s.notes}"</p>}
 
                   {/* UPI payment note for payer */}
-                  {isPayer && recipientUpi && (s.status === 'proposed' || s.status === 'pending') && (
-                    <div className="rounded-lg p-2.5 mb-3 bg-[rgb(var(--color-pending)/0.08)] border border-[rgb(var(--color-pending)/0.2)]">
-                      <div className="flex items-start gap-2">
-                        <AlertCircle size={14} className="text-[rgb(var(--color-pending))] flex-shrink-0 mt-0.5" aria-hidden="true" />
-                        <p className="text-xs text-muted">
-                          Opening UPI does not automatically confirm payment. The recipient must confirm receipt before your balance updates.
-                        </p>
+                  {isPayer &&
+                    recipientUpi &&
+                    (s.status === 'proposed' || s.status === 'pending') && (
+                      <div className="mb-3 rounded-lg border border-[rgb(var(--color-pending)/0.2)] bg-[rgb(var(--color-pending)/0.08)] p-2.5">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle
+                            size={14}
+                            className="mt-0.5 flex-shrink-0 text-[rgb(var(--color-pending))]"
+                            aria-hidden="true"
+                          />
+                          <p className="text-muted text-xs">
+                            Opening UPI does not automatically confirm payment. The recipient must
+                            confirm receipt before your balance updates.
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  )}
-
-                  <div className="flex gap-2 flex-wrap">
-                    {/* UPI pay button */}
-                    {isPayer && recipientUpi && (s.status === 'proposed' || s.status === 'pending') && (
-                      <a
-                        href={buildUpiLink(recipientUpi, s.amount_paise, other.display_name)}
-                        className="btn-secondary text-sm px-3 py-1.5"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label={`Pay ${other.display_name} via UPI`}
-                      >
-                        <ExternalLink size={14} aria-hidden="true" /> Pay via UPI
-                      </a>
                     )}
+
+                  <div className="flex flex-wrap gap-2">
+                    {/* UPI pay button */}
+                    {isPayer &&
+                      recipientUpi &&
+                      (s.status === 'proposed' || s.status === 'pending') && (
+                        <a
+                          href={buildUpiLink(recipientUpi, s.amount_paise, other.display_name)}
+                          className="btn-secondary px-3 py-1.5 text-sm"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`Pay ${other.display_name} via UPI`}
+                        >
+                          <ExternalLink size={14} aria-hidden="true" /> Pay via UPI
+                        </a>
+                      )}
 
                     {/* Recipient actions */}
                     {canConfirm && (
@@ -279,16 +334,20 @@ export function SettlementsPage() {
                         <button
                           onClick={() => void confirmSettlement(s.id)}
                           disabled={isLoading}
-                          className="btn-primary text-sm px-3 py-1.5 flex-1"
+                          className="btn-primary flex-1 px-3 py-1.5 text-sm"
                           aria-label={`Confirm you received ${formatINR(s.amount_paise)} from ${other.display_name}`}
                         >
-                          {isLoading ? <Spinner size={14} /> : <Check size={14} aria-hidden="true" />}
+                          {isLoading ? (
+                            <Spinner size={14} />
+                          ) : (
+                            <Check size={14} aria-hidden="true" />
+                          )}
                           Confirm received
                         </button>
                         <button
                           onClick={() => void rejectSettlement(s.id)}
                           disabled={isLoading}
-                          className="btn-secondary text-sm px-3 py-1.5 text-[rgb(var(--color-negative))]"
+                          className="btn-secondary px-3 py-1.5 text-sm text-[rgb(var(--color-negative))]"
                           aria-label={`Decline this settlement`}
                         >
                           <X size={14} aria-hidden="true" /> Decline
@@ -301,7 +360,7 @@ export function SettlementsPage() {
                       <button
                         onClick={() => void cancelSettlement(s.id)}
                         disabled={isLoading}
-                        className="btn-ghost text-sm text-muted"
+                        className="btn-ghost text-muted text-sm"
                         aria-label="Cancel this settlement"
                       >
                         {isLoading ? <Spinner size={14} /> : null}
@@ -312,7 +371,7 @@ export function SettlementsPage() {
 
                   {/* Pending clarification */}
                   {(s.status === 'proposed' || s.status === 'pending') && (
-                    <p className="text-[10px] text-muted mt-2">
+                    <p className="text-muted mt-2 text-[10px]">
                       {isPayer
                         ? `Waiting for ${other.display_name} to confirm receipt. Your balance will update once confirmed.`
                         : `${other.display_name} says they paid you. Confirm only when you have received the money.`}

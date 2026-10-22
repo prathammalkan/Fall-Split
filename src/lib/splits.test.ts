@@ -9,7 +9,10 @@ import {
 } from './splits';
 
 // Helper: verify allocations sum to total
-function assertReconciled(result: { allocations: { amountPaise: number }[]; reconciled: boolean }, total: number) {
+function assertReconciled(
+  result: { allocations: { amountPaise: number }[]; reconciled: boolean },
+  total: number
+) {
   const sum = result.allocations.reduce((acc, a) => acc + a.amountPaise, 0);
   expect(sum).toBe(total);
   expect(result.reconciled).toBe(true);
@@ -322,5 +325,85 @@ describe('validateMultiplePayers', () => {
 
   it('throws for empty payers', () => {
     expect(() => validateMultiplePayers(10000, [])).toThrow();
+  });
+});
+
+describe('safe paise boundaries', () => {
+  it('rejects unsafe totals and assignments', () => {
+    expect(() => equalSplit(Number.MAX_SAFE_INTEGER + 1, ['a'])).toThrow();
+    expect(() =>
+      unequalSplit(Number.MAX_SAFE_INTEGER, [
+        { userId: 'a', amountPaise: Number.MAX_SAFE_INTEGER },
+        { userId: 'b', amountPaise: 1 },
+      ])
+    ).toThrow();
+  });
+
+  it('rejects item totals whose combined amount overflows safe integer precision', () => {
+    expect(() =>
+      itemizedSplit(Number.MAX_SAFE_INTEGER, [
+        {
+          name: 'A',
+          totalPaise: Number.MAX_SAFE_INTEGER,
+          participants: [{ userId: 'a', amountPaise: Number.MAX_SAFE_INTEGER }],
+        },
+        {
+          name: 'B',
+          totalPaise: 1,
+          participants: [{ userId: 'b', amountPaise: 1 }],
+        },
+      ])
+    ).toThrow();
+  });
+
+  it('reconciles percentage and weighted splits at the largest safe paise total', () => {
+    const total = Number.MAX_SAFE_INTEGER;
+    const percentages = percentageSplit(total, [
+      { userId: 'a', percentage: 50 },
+      { userId: 'b', percentage: 50 },
+    ]);
+    const shares = sharesSplit(total, [
+      { userId: 'a', shares: 1 },
+      { userId: 'b', shares: 1 },
+    ]);
+
+    assertReconciled(percentages, total);
+    assertReconciled(shares, total);
+    expect(percentages.allocations.map((allocation) => allocation.amountPaise)).toEqual([
+      4503599627370496, 4503599627370495,
+    ]);
+    expect(shares.allocations.map((allocation) => allocation.amountPaise)).toEqual([
+      4503599627370496, 4503599627370495,
+    ]);
+  });
+
+  it('conserves totals across deterministic randomized split inputs', () => {
+    let seed = 0x5eed1234;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0x100000000;
+    };
+
+    for (let sample = 0; sample < 250; sample++) {
+      const totalPaise = 1 + Math.floor(random() * 1_000_000_000);
+      const participantCount = 1 + Math.floor(random() * 8);
+      const ids = Array.from({ length: participantCount }, (_, index) => `u${index}`);
+      const weights = ids.map(() => 1 + Math.floor(random() * 100));
+      const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+      const percentages = weights.map((weight, index) => ({
+        userId: ids[index]!,
+        percentage: (weight / weightTotal) * 100,
+      }));
+
+      assertReconciled(equalSplit(totalPaise, ids), totalPaise);
+      assertReconciled(
+        sharesSplit(
+          totalPaise,
+          weights.map((shares, index) => ({ userId: ids[index]!, shares }))
+        ),
+        totalPaise
+      );
+      assertReconciled(percentageSplit(totalPaise, percentages), totalPaise);
+    }
   });
 });

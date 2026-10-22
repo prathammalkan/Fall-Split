@@ -9,7 +9,9 @@ export function Spinner({ size = 20 }: { size?: number }) {
       aria-hidden="true"
     >
       <circle
-        cx="12" cy="12" r="10"
+        cx="12"
+        cy="12"
+        r="10"
         stroke="currentColor"
         strokeWidth="3"
         strokeLinecap="round"

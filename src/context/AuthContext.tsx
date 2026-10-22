@@ -1,13 +1,9 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useCallback,
-  type ReactNode,
-} from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { FunctionsHttpError } from '@supabase/supabase-js';
+import { db, supabase } from '../lib/supabase';
+import { completeAccountDeletion } from '../lib/accountDeletion';
+import { clearOperationsForUser } from '../lib/offlineQueue';
 import type { Profile } from '../types';
 
 interface AuthState {
@@ -23,12 +19,17 @@ interface AuthContextValue extends AuthState {
   signInWithMagicLink: (email: string, redirectTo?: string) => Promise<{ error: Error | null }>;
   signInWithGoogle: (redirectTo?: string) => Promise<{ error: Error | null }>;
   signInWithApple: (redirectTo?: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, displayName: string, redirectTo?: string) => Promise<{ error: Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    displayName: string,
+    redirectTo?: string
+  ) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: Error | null }>;
   updatePassword: (password: string) => Promise<{ error: Error | null }>;
   refreshProfile: () => Promise<void>;
-  deleteAccount: () => Promise<{ error: Error | null }>;
+  deleteAccount: () => Promise<{ error: Error | null; partialFailure?: boolean }>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -41,6 +42,24 @@ function getAuthCallbackUrl(redirectTo?: string): string {
   return callback.toString();
 }
 
+async function readFunctionError(error: Error | null): Promise<Error | null> {
+  if (!error) return null;
+  if (!(error instanceof FunctionsHttpError) || !(error.context instanceof Response)) {
+    return error;
+  }
+
+  const payload: unknown = await error.context.clone().json();
+  if (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'error' in payload &&
+    typeof payload.error === 'string'
+  ) {
+    return new Error(payload.error);
+  }
+  return error;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
     session: null,
@@ -51,11 +70,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const fetchProfile = useCallback(async (userId: string): Promise<Profile | null> => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+    const { data, error } = await db.rpc('get_profile_for_user', {
+      p_user_id: userId,
+    });
 
     if (error) {
       if (import.meta.env.DEV) {
@@ -63,43 +80,91 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return null;
     }
-    return data;
+    return data?.[0] ?? null;
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) return;
     const profile = await fetchProfile(user.id);
-    setState((prev) => ({ ...prev, profile }));
+    setState((prev) => (prev.user?.id === user.id ? { ...prev, profile } : prev));
   }, [fetchProfile]);
 
   useEffect(() => {
-    // Initialize auth state
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    let active = true;
+    let eventVersion = 0;
+
+    const applySession = (session: Session | null, version: number) => {
       const user = session?.user ?? null;
-      const profile = user ? await fetchProfile(user.id) : null;
       const emailVerified = user?.email_confirmed_at != null || user?.phone_confirmed_at != null;
-      setState({ session, user, profile, loading: false, emailVerified });
-    });
+
+      if (!user) {
+        setState({
+          session: null,
+          user: null,
+          profile: null,
+          loading: false,
+          emailVerified: false,
+        });
+        return;
+      }
+
+      setState((previous) => ({
+        session,
+        user,
+        profile: previous.user?.id === user.id ? previous.profile : null,
+        loading: false,
+        emailVerified,
+      }));
+
+      // Supabase auth callbacks run while its auth lock is held. Defer the
+      // profile RPC until after the callback returns, and discard stale results
+      // if a newer sign-in/sign-out event arrives first.
+      window.setTimeout(() => {
+        if (!active || version !== eventVersion) return;
+        void fetchProfile(user.id).then((profile) => {
+          if (!active || version !== eventVersion) return;
+          setState((previous) =>
+            previous.user?.id === user.id ? { ...previous, profile } : previous
+          );
+        });
+      }, 0);
+    };
+
+    const initialVersion = eventVersion;
+    void supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        if (active && eventVersion === initialVersion) {
+          applySession(session, initialVersion);
+        }
+      })
+      .catch(() => {
+        if (active && eventVersion === initialVersion) {
+          setState({
+            session: null,
+            user: null,
+            profile: null,
+            loading: false,
+            emailVerified: false,
+          });
+        }
+      });
 
     // Subscribe to auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        const user = session?.user ?? null;
-        const emailVerified = user?.email_confirmed_at != null || user?.phone_confirmed_at != null;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      eventVersion += 1;
+      applySession(session, eventVersion);
+    });
 
-        if (event === 'SIGNED_OUT') {
-          // Clear all cached user data on logout
-          setState({ session: null, user: null, profile: null, loading: false, emailVerified: false });
-          return;
-        }
-
-        const profile = user ? await fetchProfile(user.id) : null;
-        setState({ session, user, profile, loading: false, emailVerified });
-      }
-    );
-
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, [fetchProfile]);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
@@ -141,17 +206,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error as Error | null };
   }, []);
 
-  const signUp = useCallback(async (email: string, password: string, displayName: string, redirectTo?: string) => {
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: getAuthCallbackUrl(redirectTo),
-        data: { full_name: displayName },
-      },
-    });
-    return { error: error as Error | null };
-  }, []);
+  const signUp = useCallback(
+    async (email: string, password: string, displayName: string, redirectTo?: string) => {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: getAuthCallbackUrl(redirectTo),
+          data: { full_name: displayName },
+        },
+      });
+      return { error: error as Error | null };
+    },
+    []
+  );
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -171,28 +239,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const deleteAccount = useCallback(async () => {
-    // Step 1: Call the SECURITY DEFINER RPC to anonymize profile data and
-    // cancel all pending financial/social records. This works without a deployed
-    // Edge Function because the RPC runs server-side with elevated privileges.
-    const { error: rpcError } = await supabase.rpc('delete_account' as never);
-    if (rpcError) {
-      return { error: rpcError as Error };
+    const userId = state.user?.id;
+    const result = await completeAccountDeletion({
+      anonymizeProfile: async () => {
+        const { data, error } = await db.rpc('delete_account');
+        if (error) return { error };
+        if (data && typeof data === 'object' && 'error' in data && data.error) {
+          return { error: new Error(String(data.error)) };
+        }
+        return { error: null };
+      },
+      clearOfflineQueue: async () => {
+        if (!userId)
+          return { error: new Error('Signed-in user is required to clear offline data') };
+        try {
+          await clearOperationsForUser(userId);
+          return { error: null };
+        } catch (error) {
+          return {
+            error:
+              error instanceof Error
+                ? error
+                : new Error('Offline expense data could not be cleared'),
+          };
+        }
+      },
+      deleteAuthUser: async () => {
+        const { error } = await supabase.functions.invoke('delete-account', { method: 'POST' });
+        return { error: await readFunctionError(error as Error | null) };
+      },
+      signOut: async () => {
+        const { error } = await supabase.auth.signOut();
+        return { error: error as Error | null };
+      },
+    });
+    if (result.partialFailure) {
+      await refreshProfile();
     }
-
-    // Step 2: Try Edge Function first (handles auth.users deletion server-side).
-    // If the Edge Function is not deployed, fall back to client-side sign-out.
-    // The account is effectively inaccessible once the profile is anonymized.
-    try {
-      await supabase.functions.invoke('delete-account', { method: 'POST' });
-    } catch {
-      // Edge Function not deployed — profile is already anonymized above.
-      // User is signed out below which terminates the session.
-    }
-
-    // Step 3: Sign out regardless — the session must be terminated.
-    await supabase.auth.signOut();
-    return { error: null };
-  }, []);
+    return result;
+  }, [refreshProfile, state.user?.id]);
 
   const value: AuthContextValue = {
     ...state,

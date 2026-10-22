@@ -1,14 +1,22 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Minus, X, ChevronDown, Calendar, Tag, StickyNote, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
-import { equalSplit, unequalSplit, percentageSplit, sharesSplit, itemizedSplit, validateMultiplePayers } from '../../lib/splits';
+import {
+  equalSplit,
+  unequalSplit,
+  percentageSplit,
+  sharesSplit,
+  itemizedSplit,
+  validateMultiplePayers,
+} from '../../lib/splits';
 import { parseINR, formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
+import { SheetDialog } from '../../components/ui/SheetDialog';
 import { queueOfflineOperation } from '../../lib/offlineQueue';
 import type { Profile, Group } from '../../types';
 import { format } from 'date-fns';
@@ -24,8 +32,15 @@ const SPLIT_METHODS: { value: SplitMethod; label: string }[] = [
 ];
 
 const CATEGORIES = [
-  'Food & Drink', 'Transport', 'Accommodation', 'Entertainment',
-  'Shopping', 'Utilities', 'Healthcare', 'Travel', 'Other',
+  'Food & Drink',
+  'Transport',
+  'Accommodation',
+  'Entertainment',
+  'Shopping',
+  'Utilities',
+  'Healthcare',
+  'Travel',
+  'Other',
 ];
 
 interface Participant {
@@ -59,8 +74,12 @@ export function AddExpensePage() {
   const [step, setStep] = useState<'basic' | 'split'>('basic');
   const [splitMethod, setSplitMethod] = useState<SplitMethod>('equal');
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [payers, setPayers] = useState<{ userId: string; profile: Profile; amountStr: string }[]>([]);
-  const [lineItems, setLineItems] = useState<LineItem[]>([{ id: crypto.randomUUID(), name: '', quantity: 1, unitPriceStr: '', participants: [] }]);
+  const [payers, setPayers] = useState<{ userId: string; profile: Profile; amountStr: string }[]>(
+    []
+  );
+  const [lineItems, setLineItems] = useState<LineItem[]>([
+    { id: crypto.randomUUID(), name: '', quantity: 1, unitPriceStr: '', participants: [] },
+  ]);
   const [availableProfiles, setAvailableProfiles] = useState<Profile[]>([]);
   const [_group, setGroup] = useState<Group | null>(null);
   const [saving, setSaving] = useState(false);
@@ -71,6 +90,7 @@ export function AddExpensePage() {
   const [category, setCategory] = useState('');
   const [notes, setNotes] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const submissionKey = useRef<{ fingerprint: string; key: string } | null>(null);
 
   const totalPaise = parseINR(amountStr) ?? 0;
 
@@ -79,14 +99,22 @@ export function AddExpensePage() {
     let profiles: Profile[] = [profile];
 
     if (groupIdParam) {
-      const { data: gData } = await supabase.from('groups').select('*').eq('id', groupIdParam).single();
+      const { data: gData } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('id', groupIdParam)
+        .single();
       if (gData) setGroup(gData as unknown as Group);
       const { data: members } = await supabase
         .from('group_members')
-        .select('user_id, profiles!group_members_user_id_fkey (*)')
+        .select(
+          'user_id, profiles!group_members_user_id_fkey (id, username, display_name, avatar_url)'
+        )
         .eq('group_id', groupIdParam)
         .is('removed_at', null);
-      profiles = (members ?? []).map((m: unknown) => (m as { profiles: Profile }).profiles).filter(Boolean);
+      profiles = (members ?? [])
+        .map((m: unknown) => (m as { profiles: Profile }).profiles)
+        .filter(Boolean);
       setAvailableProfiles(profiles);
       setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
     } else {
@@ -96,14 +124,20 @@ export function AddExpensePage() {
         .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
         .eq('status', 'accepted');
       const requests = (requestsRaw ?? []) as unknown as FriendRequestRow[];
-      const friendIds = requests.map((r) => r.sender_id === user.id ? r.receiver_id : r.sender_id);
-      const allIds = friendIdParam && !friendIds.includes(friendIdParam)
-        ? [...friendIds, friendIdParam]
-        : friendIds;
+      const friendIds = requests.map((r) =>
+        r.sender_id === user.id ? r.receiver_id : r.sender_id
+      );
+      const allIds =
+        friendIdParam && !friendIds.includes(friendIdParam)
+          ? [...friendIds, friendIdParam]
+          : friendIds;
 
       if (allIds.length > 0) {
-        const { data } = await supabase.from('profiles').select('*').in('id', allIds);
-        profiles = [profile, ...(data ?? []) as unknown as Profile[]];
+        const { data } = await supabase
+          .from('discoverable_profiles')
+          .select('id, username, display_name, avatar_url')
+          .in('id', allIds);
+        profiles = [profile, ...((data ?? []) as unknown as Profile[])];
       }
 
       setAvailableProfiles(profiles);
@@ -146,6 +180,61 @@ export function AddExpensePage() {
     );
   };
 
+  const distributeItemAmount = (item: LineItem, userIds: string[]) => {
+    const total = Math.round((parseINR(item.unitPriceStr) ?? 0) * item.quantity);
+    return total > 0 && userIds.length > 0
+      ? equalSplit(total, userIds).allocations
+      : userIds.map((userId) => ({ userId, amountPaise: 0 }));
+  };
+
+  const updateLineItem = (
+    itemId: string,
+    changes: Partial<Pick<LineItem, 'name' | 'quantity' | 'unitPriceStr'>>
+  ) => {
+    setLineItems((previous) =>
+      previous.map((item) => {
+        if (item.id !== itemId) return item;
+        const updated = { ...item, ...changes };
+        if (!('quantity' in changes) && !('unitPriceStr' in changes)) return updated;
+        return {
+          ...updated,
+          participants: distributeItemAmount(
+            updated,
+            item.participants.map((participant) => participant.userId)
+          ),
+        };
+      })
+    );
+  };
+
+  const toggleLineItemParticipant = (itemId: string, userId: string) => {
+    setLineItems((previous) =>
+      previous.map((item) => {
+        if (item.id !== itemId) return item;
+        const currentIds = item.participants.map((participant) => participant.userId);
+        const nextIds = currentIds.includes(userId)
+          ? currentIds.filter((currentId) => currentId !== userId)
+          : [...currentIds, userId];
+        return { ...item, participants: distributeItemAmount(item, nextIds) };
+      })
+    );
+  };
+
+  const updateLineItemAllocation = (itemId: string, userId: string, amountPaise: number) => {
+    setLineItems((previous) =>
+      previous.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              participants: item.participants.map((participant) =>
+                participant.userId === userId ? { ...participant, amountPaise } : participant
+              ),
+            }
+          : item
+      )
+    );
+  };
+
   const computeAllocations = (): { userId: string; amountPaise: number }[] | null => {
     if (totalPaise <= 0 || participants.length === 0) return null;
     try {
@@ -154,26 +243,44 @@ export function AddExpensePage() {
         case 'equal':
           return equalSplit(totalPaise, ids).allocations;
         case 'unequal': {
-          const assignments = participants.map((p) => ({ userId: p.userId, amountPaise: p.amountPaise ?? 0 }));
+          const assignments = participants.map((p) => ({
+            userId: p.userId,
+            amountPaise: p.amountPaise ?? 0,
+          }));
           return unequalSplit(totalPaise, assignments).allocations;
         }
         case 'percentage': {
-          const assignments = participants.map((p) => ({ userId: p.userId, percentage: p.percentage ?? 0 }));
+          const assignments = participants.map((p) => ({
+            userId: p.userId,
+            percentage: p.percentage ?? 0,
+          }));
           return percentageSplit(totalPaise, assignments).allocations;
         }
         case 'shares': {
-          const assignments = participants.map((p) => ({ userId: p.userId, shares: p.shares ?? 1 }));
+          const assignments = participants.map((p) => ({
+            userId: p.userId,
+            shares: p.shares ?? 1,
+          }));
           return sharesSplit(totalPaise, assignments).allocations;
         }
         case 'itemized': {
-          const items = lineItems
-            .filter((i) => i.name && parseINR(i.unitPriceStr))
-            .map((i) => ({
-              name: i.name,
-              totalPaise: Math.round((parseINR(i.unitPriceStr) ?? 0) * i.quantity),
-              participants: i.participants,
-            }));
-          if (items.length === 0) return null;
+          const items = [];
+          for (const item of lineItems) {
+            const unitPricePaise = parseINR(item.unitPriceStr);
+            if (
+              !item.name.trim() ||
+              unitPricePaise === null ||
+              !Number.isFinite(item.quantity) ||
+              item.quantity <= 0
+            ) {
+              return null;
+            }
+            items.push({
+              name: item.name.trim(),
+              totalPaise: Math.round(unitPricePaise * item.quantity),
+              participants: item.participants,
+            });
+          }
           return itemizedSplit(totalPaise, items).allocations;
         }
       }
@@ -187,7 +294,10 @@ export function AddExpensePage() {
       return [{ userId: payers[0]!.userId, amountPaise: totalPaise }];
     }
     try {
-      const payerAmounts = payers.map((p) => ({ userId: p.userId, amountPaise: parseINR(p.amountStr) ?? 0 }));
+      const payerAmounts = payers.map((p) => ({
+        userId: p.userId,
+        amountPaise: parseINR(p.amountStr) ?? 0,
+      }));
       validateMultiplePayers(totalPaise, payerAmounts);
       return payerAmounts;
     } catch {
@@ -198,65 +308,126 @@ export function AddExpensePage() {
   const handleSave = async () => {
     if (!user) return;
     setError(null);
-    if (!title.trim()) { setError('Please enter a title.'); return; }
-    if (totalPaise <= 0) { setError('Please enter a valid amount.'); return; }
-    if (participants.length === 0) { setError('Select at least one participant.'); return; }
+    if (!title.trim()) {
+      setError('Please enter a title.');
+      return;
+    }
+    if (totalPaise <= 0) {
+      setError('Please enter a valid amount.');
+      return;
+    }
+    if (participants.length === 0) {
+      setError('Select at least one participant.');
+      return;
+    }
 
     const allocations = computeAllocations();
-    if (!allocations) { setError('Could not compute split. Check your inputs.'); return; }
+    if (!allocations) {
+      setError('Could not compute split. Check your inputs.');
+      return;
+    }
 
     const payerAmounts = validatePayers();
-    if (!payerAmounts) { setError('Payer contributions do not add up to the expense total.'); return; }
+    if (!payerAmounts) {
+      setError('Payer contributions do not add up to the expense total.');
+      return;
+    }
+
+    const expenseShares = allocations.map((allocation) => ({
+      ...allocation,
+      percentage:
+        splitMethod === 'percentage'
+          ? (participants.find((participant) => participant.userId === allocation.userId)
+              ?.percentage ?? null)
+          : null,
+      shareWeight:
+        splitMethod === 'shares'
+          ? (participants.find((participant) => participant.userId === allocation.userId)?.shares ??
+            null)
+          : null,
+    }));
+    const expenseInput = {
+      title: title.trim(),
+      amount_paise: totalPaise,
+      currency: 'INR',
+      split_method: splitMethod,
+      group_id: groupIdParam,
+      creator_id: user.id,
+      expense_date: expenseDate,
+      category: category || null,
+      notes: notes || null,
+    };
+    const itemizedItems =
+      splitMethod === 'itemized'
+        ? lineItems.map((item, sort_order) => {
+            const unitPricePaise = parseINR(item.unitPriceStr) ?? 0;
+            return {
+              name: item.name.trim(),
+              quantity: item.quantity,
+              unit_price_paise: unitPricePaise,
+              total_paise: Math.round(unitPricePaise * item.quantity),
+              sort_order,
+              allocations: item.participants,
+            };
+          })
+        : [];
+    const fingerprint = JSON.stringify({
+      expenseInput,
+      payers: payerAmounts,
+      shares: expenseShares,
+      items: itemizedItems,
+    });
+    if (submissionKey.current?.fingerprint !== fingerprint) {
+      submissionKey.current = {
+        fingerprint,
+        key: `exp-${user.id}-${Date.now()}-${crypto.randomUUID()}`,
+      };
+    }
+    const idempotencyKey = submissionKey.current.key;
 
     setSaving(true);
-    const idempotencyKey = `exp-${user.id}-${Date.now()}-${crypto.randomUUID()}`;
 
     try {
       if (!navigator.onLine) {
         await queueOfflineOperation({
           type: 'create_expense',
-          payload: { title: title.trim(), amount_paise: totalPaise, currency: 'INR', split_method: splitMethod, group_id: groupIdParam, creator_id: user.id, expense_date: expenseDate, category: category || null, notes: notes || null, idempotency_key: idempotencyKey, payers: payerAmounts, shares: allocations },
+          payload: {
+            ...expenseInput,
+            idempotency_key: idempotencyKey,
+            payers: payerAmounts,
+            shares: expenseShares,
+            items: itemizedItems,
+          },
           idempotencyKey,
         });
         navigate(-1);
         return;
       }
 
-      const { data: expense, error: expError } = await db
-        .from('expenses')
-        .insert({ title: title.trim(), amount_paise: totalPaise, currency: 'INR', split_method: splitMethod, group_id: groupIdParam, creator_id: user.id, expense_date: expenseDate, category: category || null, notes: notes || null, idempotency_key: idempotencyKey })
-        .select()
-        .single();
+      const rpcName =
+        splitMethod === 'itemized'
+          ? 'create_itemized_expense_with_records'
+          : 'create_expense_with_records';
+      const rpcArgs = {
+        p_expense: { ...expenseInput, idempotency_key: idempotencyKey },
+        p_payers: payerAmounts,
+        p_shares: expenseShares,
+        ...(splitMethod === 'itemized' ? { p_items: itemizedItems } : {}),
+      };
+      const { data: expenseId, error: expError } = await db.rpc(rpcName, rpcArgs);
 
-      if (expError || !expense) { setError(expError?.message ?? 'Failed to create expense.'); return; }
-
-      const [payersResult, sharesResult] = await Promise.all([
-        db.from('expense_payers').insert(payerAmounts.map((p: { userId: string; amountPaise: number }) => ({ expense_id: expense.id, user_id: p.userId, amount_paise: p.amountPaise }))),
-        db.from('expense_shares').insert(allocations.map((a: { userId: string; amountPaise: number }) => ({
-          expense_id: expense.id, user_id: a.userId, amount_paise: a.amountPaise,
-          percentage: splitMethod === 'percentage' ? participants.find((p) => p.userId === a.userId)?.percentage ?? null : null,
-          share_weight: splitMethod === 'shares' ? participants.find((p) => p.userId === a.userId)?.shares ?? null : null,
-        }))),
-      ]);
-
-      if (payersResult.error || sharesResult.error) {
-        // Void the orphaned expense header so it doesn't corrupt balances
-        await db.from('expenses').update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: user.id, void_reason: 'Payers/shares insert failed' }).eq('id', expense.id);
-        setError(payersResult.error?.message ?? sharesResult.error?.message ?? 'Failed to save expense participants. Please try again.');
+      if (expError || typeof expenseId !== 'string' || !expenseId) {
+        setError(
+          expError?.message ?? 'Expense was not confirmed as fully persisted. Please retry.'
+        );
         return;
       }
 
-      if (splitMethod === 'itemized') {
-        for (const item of lineItems.filter((i) => i.name && parseINR(i.unitPriceStr))) {
-          const unitPrice = parseINR(item.unitPriceStr) ?? 0;
-          const { data: ins } = await db.from('expense_items').insert({ expense_id: expense.id, name: item.name, quantity: item.quantity, unit_price_paise: unitPrice, total_paise: Math.round(unitPrice * item.quantity) }).select().single();
-          if (ins && item.participants.length > 0) {
-            await db.from('expense_item_allocations').insert(item.participants.map((p: { userId: string; amountPaise: number }) => ({ item_id: ins.id, user_id: p.userId, amount_paise: p.amountPaise })));
-          }
-        }
-      }
-
-      navigate(`/expenses/${expense.id}`, { replace: true });
+      navigate(`/expenses/${expenseId}`, { replace: true });
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error ? saveError.message : 'Expense could not be saved. Please retry.'
+      );
     } finally {
       setSaving(false);
     }
@@ -268,223 +439,500 @@ export function AddExpensePage() {
 
   if (step === 'basic') {
     return (
-      <div>
-        <PageHeader title="Add expense" back />
-        <div className="page-content pt-4 space-y-5">
-          <div>
-            <label className="block text-xs text-muted mb-1">Amount</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xl font-semibold text-secondary">₹</span>
-              <input type="number" inputMode="decimal" value={amountStr} onChange={(e) => setAmountStr(e.target.value)} className="input pl-8 text-2xl font-bold h-14" placeholder="0.00" min="0" step="0.01" />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs text-muted mb-1">What's it for?</label>
-            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} className="input" placeholder="Dinner, taxi, groceries…" maxLength={120} />
-          </div>
-
-          <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} className="flex items-center gap-2 text-sm text-muted">
-            <ChevronDown size={16} className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
-            {showAdvanced ? 'Less options' : 'Date, category, notes'}
-          </button>
-
-          {showAdvanced && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs text-muted mb-1"><Calendar size={12} className="inline mr-1" />Date</label>
-                <input type="date" value={expenseDate} onChange={(e) => setExpenseDate(e.target.value)} className="input" />
-              </div>
-              <div>
-                <label className="block text-xs text-muted mb-1"><Tag size={12} className="inline mr-1" />Category</label>
-                <select value={category} onChange={(e) => setCategory(e.target.value)} className="input">
-                  <option value="">No category</option>
-                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-muted mb-1"><StickyNote size={12} className="inline mr-1" />Notes</label>
-                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="input" rows={2} placeholder="Optional" maxLength={500} />
+      <SheetDialog title="Add expense" onClose={() => navigate(-1)}>
+        <div>
+          <PageHeader title="Add expense" back />
+          <div className="page-content space-y-5 pt-4">
+            <div>
+              <label className="text-muted mb-1 block text-xs">Amount</label>
+              <div className="relative">
+                <span className="text-secondary absolute top-1/2 left-3 -translate-y-1/2 text-xl font-semibold">
+                  ₹
+                </span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={amountStr}
+                  onChange={(e) => setAmountStr(e.target.value)}
+                  className="input h-14 pl-8 text-2xl font-bold"
+                  placeholder="0.00"
+                  min="0"
+                  step="0.01"
+                />
               </div>
             </div>
-          )}
 
-          <div>
-            <label className="block text-xs text-muted mb-2"><Users size={12} className="inline mr-1" />Participants</label>
-            <div className="flex flex-wrap gap-2">
-              {availableProfiles.map((p) => {
-                const selected = participants.some((x) => x.userId === p.id);
-                return (
-                  <button key={p.id} onClick={() => toggleParticipant(p)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm transition-colors ${selected ? 'bg-[rgb(var(--color-accent))] text-white' : 'bg-tertiary text-secondary'}`}>
-                    <Avatar src={p.avatar_url} name={p.display_name} size={20} />
-                    {p.display_name}
-                  </button>
-                );
-              })}
+            <div>
+              <label className="text-muted mb-1 block text-xs">What's it for?</label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="input"
+                placeholder="Dinner, taxi, groceries…"
+                maxLength={120}
+              />
             </div>
-          </div>
 
-          <div>
-            <label className="block text-xs text-muted mb-2">Paid by</label>
-            <div className="flex flex-wrap gap-2">
-              {availableProfiles.map((p) => {
-                const selected = payers.some((x) => x.userId === p.id);
-                return (
-                  <button key={p.id} onClick={() => togglePayer(p)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm transition-colors ${selected ? 'bg-[rgb(var(--color-positive)/0.9)] text-white' : 'bg-tertiary text-secondary'}`}>
-                    <Avatar src={p.avatar_url} name={p.display_name} size={20} />
-                    {p.display_name}
-                  </button>
-                );
-              })}
-            </div>
-            {payers.length > 1 && (
-              <div className="mt-3 space-y-2">
-                <p className="text-xs text-muted">Enter each payer's contribution (must total {formatINR(totalPaise)}):</p>
-                {payers.map((payer) => (
-                  <div key={payer.userId} className="flex items-center gap-2">
-                    <Avatar src={payer.profile.avatar_url} name={payer.profile.display_name} size={28} />
-                    <span className="flex-1 text-sm text-primary">{payer.profile.display_name}</span>
-                    <div className="relative w-28">
-                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-sm">₹</span>
-                      <input type="number" inputMode="decimal" value={payer.amountStr} onChange={(e) => setPayers((prev) => prev.map((p) => p.userId === payer.userId ? { ...p, amountStr: e.target.value } : p))} className="input pl-6 text-sm" placeholder="0.00" />
-                    </div>
-                  </div>
-                ))}
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="text-muted flex items-center gap-2 text-sm"
+            >
+              <ChevronDown
+                size={16}
+                className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`}
+              />
+              {showAdvanced ? 'Less options' : 'Date, category, notes'}
+            </button>
+
+            {showAdvanced && (
+              <div className="space-y-4">
+                <div>
+                  <label className="text-muted mb-1 block text-xs">
+                    <Calendar size={12} className="mr-1 inline" />
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={expenseDate}
+                    onChange={(e) => setExpenseDate(e.target.value)}
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label className="text-muted mb-1 block text-xs">
+                    <Tag size={12} className="mr-1 inline" />
+                    Category
+                  </label>
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    className="input"
+                  >
+                    <option value="">No category</option>
+                    {CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-muted mb-1 block text-xs">
+                    <StickyNote size={12} className="mr-1 inline" />
+                    Notes
+                  </label>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="input"
+                    rows={2}
+                    placeholder="Optional"
+                    maxLength={500}
+                  />
+                </div>
               </div>
             )}
+
+            <div>
+              <label className="text-muted mb-2 block text-xs">
+                <Users size={12} className="mr-1 inline" />
+                Participants
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {availableProfiles.map((p) => {
+                  const selected = participants.some((x) => x.userId === p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => toggleParticipant(p)}
+                      className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-colors ${selected ? 'bg-[rgb(var(--color-accent))] text-white' : 'bg-tertiary text-secondary'}`}
+                    >
+                      <Avatar src={p.avatar_url} name={p.display_name} size={20} />
+                      {p.display_name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-muted mb-2 block text-xs">Paid by</label>
+              <div className="flex flex-wrap gap-2">
+                {availableProfiles.map((p) => {
+                  const selected = payers.some((x) => x.userId === p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => togglePayer(p)}
+                      className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-colors ${selected ? 'bg-[rgb(var(--color-positive)/0.9)] text-white' : 'bg-tertiary text-secondary'}`}
+                    >
+                      <Avatar src={p.avatar_url} name={p.display_name} size={20} />
+                      {p.display_name}
+                    </button>
+                  );
+                })}
+              </div>
+              {payers.length > 1 && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-muted text-xs">
+                    Enter each payer's contribution (must total {formatINR(totalPaise)}):
+                  </p>
+                  {payers.map((payer) => (
+                    <div key={payer.userId} className="flex items-center gap-2">
+                      <Avatar
+                        src={payer.profile.avatar_url}
+                        name={payer.profile.display_name}
+                        size={28}
+                      />
+                      <span className="text-primary flex-1 text-sm">
+                        {payer.profile.display_name}
+                      </span>
+                      <div className="relative w-28">
+                        <span className="text-muted absolute top-1/2 left-2 -translate-y-1/2 text-sm">
+                          ₹
+                        </span>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          value={payer.amountStr}
+                          onChange={(e) =>
+                            setPayers((prev) =>
+                              prev.map((p) =>
+                                p.userId === payer.userId ? { ...p, amountStr: e.target.value } : p
+                              )
+                            )
+                          }
+                          className="input pl-6 text-sm"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {error && <ErrorMessage message={error} />}
+
+            <button
+              onClick={() => {
+                if (!title.trim() || totalPaise <= 0) {
+                  setError('Enter an amount and description.');
+                  return;
+                }
+                setError(null);
+                setStep('split');
+              }}
+              className="btn-primary w-full"
+            >
+              Next: Split
+            </button>
           </div>
-
-          {error && <ErrorMessage message={error} />}
-
-          <button onClick={() => { if (!title.trim() || totalPaise <= 0) { setError('Enter an amount and description.'); return; } setError(null); setStep('split'); }} className="btn-primary w-full">
-            Next: Split
-          </button>
         </div>
-      </div>
+      </SheetDialog>
     );
   }
 
   return (
-    <div>
-      <PageHeader title="Split method" back={() => setStep('basic')} />
-      <div className="page-content pt-4 space-y-4">
-        <div className="card text-center">
-          <p className="text-2xl font-bold text-primary">{formatINR(totalPaise)}</p>
-          <p className="text-sm text-muted">{title}</p>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
-          {SPLIT_METHODS.map((m) => (
-            <button key={m.value} onClick={() => setSplitMethod(m.value)} className={`py-2 px-3 rounded-lg text-sm font-medium transition-colors ${splitMethod === m.value ? 'bg-[rgb(var(--color-accent))] text-white' : 'bg-tertiary text-secondary'}`}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        {splitMethod === 'unequal' && (
-          <div className="space-y-2">
-            {participants.map((p) => (
-              <div key={p.userId} className="flex items-center gap-2">
-                <Avatar src={p.profile.avatar_url} name={p.profile.display_name} size={28} />
-                <span className="flex-1 text-sm text-primary">{p.profile.display_name}</span>
-                <div className="relative w-28">
-                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-sm">₹</span>
-                  <input type="number" inputMode="decimal" value={p.amountPaise !== undefined ? (p.amountPaise / 100).toFixed(2) : ''} onChange={(e) => { const paise = Math.round(parseFloat(e.target.value || '0') * 100); setParticipants((prev) => prev.map((x) => x.userId === p.userId ? { ...x, amountPaise: paise } : x)); }} className="input pl-6 text-sm" placeholder="0.00" />
-                </div>
-              </div>
-            ))}
-            <p className={`text-xs text-right ${allocationSum === totalPaise ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>
-              {formatINR(allocationSum)} of {formatINR(totalPaise)}
-            </p>
+    <SheetDialog title="Split method" onClose={() => navigate(-1)}>
+      <div>
+        <PageHeader title="Split method" back={() => setStep('basic')} />
+        <div className="page-content space-y-4 pt-4">
+          <div className="card text-center">
+            <p className="text-primary text-2xl font-bold">{formatINR(totalPaise)}</p>
+            <p className="text-muted text-sm">{title}</p>
           </div>
-        )}
 
-        {splitMethod === 'percentage' && (
-          <div className="space-y-2">
-            {participants.map((p) => (
-              <div key={p.userId} className="flex items-center gap-2">
-                <Avatar src={p.profile.avatar_url} name={p.profile.display_name} size={28} />
-                <span className="flex-1 text-sm text-primary">{p.profile.display_name}</span>
-                <div className="relative w-24">
-                  <input type="number" inputMode="decimal" value={p.percentage ?? ''} onChange={(e) => setParticipants((prev) => prev.map((x) => x.userId === p.userId ? { ...x, percentage: parseFloat(e.target.value) } : x))} className="input pr-6 text-sm" placeholder="0" max="100" min="0" />
-                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted text-sm">%</span>
-                </div>
-              </div>
-            ))}
-            <p className={`text-xs text-right ${Math.abs(participants.reduce((a, p) => a + (p.percentage ?? 0), 0) - 100) < 0.01 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}>
-              {participants.reduce((a, p) => a + (p.percentage ?? 0), 0).toFixed(1)}% of 100%
-            </p>
-          </div>
-        )}
-
-        {splitMethod === 'shares' && (
-          <div className="space-y-2">
-            {participants.map((p) => (
-              <div key={p.userId} className="flex items-center gap-2">
-                <Avatar src={p.profile.avatar_url} name={p.profile.display_name} size={28} />
-                <span className="flex-1 text-sm text-primary">{p.profile.display_name}</span>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setParticipants((prev) => prev.map((x) => x.userId === p.userId ? { ...x, shares: Math.max(0.5, (x.shares ?? 1) - 0.5) } : x))} className="w-8 h-8 bg-tertiary rounded-full flex items-center justify-center text-secondary"><Minus size={14} /></button>
-                  <span className="w-8 text-center text-sm font-semibold text-primary">{p.shares ?? 1}</span>
-                  <button onClick={() => setParticipants((prev) => prev.map((x) => x.userId === p.userId ? { ...x, shares: (x.shares ?? 1) + 0.5 } : x))} className="w-8 h-8 bg-tertiary rounded-full flex items-center justify-center text-secondary"><Plus size={14} /></button>
-                </div>
-              </div>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+            {SPLIT_METHODS.map((m) => (
+              <button
+                key={m.value}
+                onClick={() => setSplitMethod(m.value)}
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${splitMethod === m.value ? 'bg-[rgb(var(--color-accent))] text-white' : 'bg-tertiary text-secondary'}`}
+              >
+                {m.label}
+              </button>
             ))}
           </div>
-        )}
 
-        {splitMethod === 'itemized' && (
-          <div className="space-y-3">
-            {lineItems.map((item, idx) => (
-              <div key={item.id} className="card space-y-2">
-                <div className="flex items-center gap-2">
-                  <input type="text" value={item.name} onChange={(e) => setLineItems((prev) => prev.map((x) => x.id === item.id ? { ...x, name: e.target.value } : x))} className="input flex-1 text-sm" placeholder={`Item ${idx + 1}`} />
-                  <button onClick={() => setLineItems((prev) => prev.filter((x) => x.id !== item.id))} className="text-muted"><X size={16} /></button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <p className="text-xs text-muted mb-1">Unit price (₹)</p>
-                    <input type="number" inputMode="decimal" value={item.unitPriceStr} onChange={(e) => setLineItems((prev) => prev.map((x) => x.id === item.id ? { ...x, unitPriceStr: e.target.value } : x))} className="input text-sm" placeholder="0.00" />
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted mb-1">Qty</p>
-                    <input type="number" inputMode="numeric" value={item.quantity} onChange={(e) => setLineItems((prev) => prev.map((x) => x.id === item.id ? { ...x, quantity: parseFloat(e.target.value) || 1 } : x))} className="input text-sm" min="1" />
+          {splitMethod === 'unequal' && (
+            <div className="space-y-2">
+              {participants.map((p) => (
+                <div key={p.userId} className="flex items-center gap-2">
+                  <Avatar src={p.profile.avatar_url} name={p.profile.display_name} size={28} />
+                  <span className="text-primary flex-1 text-sm">{p.profile.display_name}</span>
+                  <div className="relative w-28">
+                    <span className="text-muted absolute top-1/2 left-2 -translate-y-1/2 text-sm">
+                      ₹
+                    </span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={p.amountPaise !== undefined ? (p.amountPaise / 100).toFixed(2) : ''}
+                      onChange={(e) => {
+                        const paise = Math.round(parseFloat(e.target.value || '0') * 100);
+                        setParticipants((prev) =>
+                          prev.map((x) =>
+                            x.userId === p.userId ? { ...x, amountPaise: paise } : x
+                          )
+                        );
+                      }}
+                      className="input pl-6 text-sm"
+                      placeholder="0.00"
+                    />
                   </div>
                 </div>
-              </div>
-            ))}
-            <button onClick={() => setLineItems((prev) => [...prev, { id: crypto.randomUUID(), name: '', quantity: 1, unitPriceStr: '', participants: [] }])} className="btn-secondary w-full text-sm">
-              <Plus size={14} /> Add item
-            </button>
-          </div>
-        )}
-
-        {allocations && (
-          <div>
-            <p className="section-title mb-2">Split preview</p>
-            <div className="card p-0 overflow-hidden">
-              {allocations.map((a) => {
-                const pp = participants.find((p) => p.userId === a.userId)?.profile;
-                return (
-                  <div key={a.userId} className="flex items-center gap-3 px-4 py-2.5 border-b border-app last:border-0">
-                    <Avatar src={pp?.avatar_url} name={pp?.display_name ?? a.userId} size={28} />
-                    <span className="flex-1 text-sm text-primary">{pp?.display_name}</span>
-                    <span className="text-sm font-semibold tabular-nums text-primary">{formatINR(a.amountPaise)}</span>
-                  </div>
-                );
-              })}
+              ))}
+              <p
+                className={`text-right text-xs ${allocationSum === totalPaise ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}
+              >
+                {formatINR(allocationSum)} of {formatINR(totalPaise)}
+              </p>
             </div>
-            {reconciled && <p className="text-xs text-[rgb(var(--color-positive))] mt-1 text-right">✓ Sums to {formatINR(totalPaise)}</p>}
-          </div>
-        )}
+          )}
 
-        {error && <ErrorMessage message={error} />}
+          {splitMethod === 'percentage' && (
+            <div className="space-y-2">
+              {participants.map((p) => (
+                <div key={p.userId} className="flex items-center gap-2">
+                  <Avatar src={p.profile.avatar_url} name={p.profile.display_name} size={28} />
+                  <span className="text-primary flex-1 text-sm">{p.profile.display_name}</span>
+                  <div className="relative w-24">
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={p.percentage ?? ''}
+                      onChange={(e) =>
+                        setParticipants((prev) =>
+                          prev.map((x) =>
+                            x.userId === p.userId
+                              ? { ...x, percentage: parseFloat(e.target.value) }
+                              : x
+                          )
+                        )
+                      }
+                      className="input pr-6 text-sm"
+                      placeholder="0"
+                      max="100"
+                      min="0"
+                    />
+                    <span className="text-muted absolute top-1/2 right-2 -translate-y-1/2 text-sm">
+                      %
+                    </span>
+                  </div>
+                </div>
+              ))}
+              <p
+                className={`text-right text-xs ${Math.abs(participants.reduce((a, p) => a + (p.percentage ?? 0), 0) - 100) < 0.01 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}
+              >
+                {participants.reduce((a, p) => a + (p.percentage ?? 0), 0).toFixed(1)}% of 100%
+              </p>
+            </div>
+          )}
 
-        <button onClick={() => void handleSave()} className="btn-primary w-full" disabled={saving || !reconciled}>
-          {saving ? <Spinner size={18} /> : null}
-          Save expense
-        </button>
+          {splitMethod === 'shares' && (
+            <div className="space-y-2">
+              {participants.map((p) => (
+                <div key={p.userId} className="flex items-center gap-2">
+                  <Avatar src={p.profile.avatar_url} name={p.profile.display_name} size={28} />
+                  <span className="text-primary flex-1 text-sm">{p.profile.display_name}</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() =>
+                        setParticipants((prev) =>
+                          prev.map((x) =>
+                            x.userId === p.userId
+                              ? { ...x, shares: Math.max(0.5, (x.shares ?? 1) - 0.5) }
+                              : x
+                          )
+                        )
+                      }
+                      className="bg-tertiary text-secondary flex h-8 w-8 items-center justify-center rounded-full"
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <span className="text-primary w-8 text-center text-sm font-semibold">
+                      {p.shares ?? 1}
+                    </span>
+                    <button
+                      onClick={() =>
+                        setParticipants((prev) =>
+                          prev.map((x) =>
+                            x.userId === p.userId ? { ...x, shares: (x.shares ?? 1) + 0.5 } : x
+                          )
+                        )
+                      }
+                      className="bg-tertiary text-secondary flex h-8 w-8 items-center justify-center rounded-full"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {splitMethod === 'itemized' && (
+            <div className="space-y-3">
+              {lineItems.map((item, idx) => (
+                <div key={item.id} className="card space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={item.name}
+                      onChange={(e) => updateLineItem(item.id, { name: e.target.value })}
+                      className="input flex-1 text-sm"
+                      placeholder={`Item ${idx + 1}`}
+                    />
+                    <button
+                      onClick={() => setLineItems((prev) => prev.filter((x) => x.id !== item.id))}
+                      className="text-muted"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <p className="text-muted mb-1 text-xs">Unit price (₹)</p>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        value={item.unitPriceStr}
+                        onChange={(e) => updateLineItem(item.id, { unitPriceStr: e.target.value })}
+                        className="input text-sm"
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div>
+                      <p className="text-muted mb-1 text-xs">Qty</p>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={item.quantity}
+                        onChange={(e) =>
+                          updateLineItem(item.id, { quantity: parseFloat(e.target.value) || 1 })
+                        }
+                        className="input text-sm"
+                        min="1"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-muted mb-1 text-xs">Split this item with</p>
+                    <div className="space-y-1">
+                      {participants.map((participant) => {
+                        const allocation = item.participants.find(
+                          (entry) => entry.userId === participant.userId
+                        );
+                        return (
+                          <div key={participant.userId} className="flex items-center gap-2">
+                            <label className="text-primary flex flex-1 items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(allocation)}
+                                onChange={() =>
+                                  toggleLineItemParticipant(item.id, participant.userId)
+                                }
+                              />
+                              {participant.profile.display_name}
+                            </label>
+                            {allocation && (
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="0.01"
+                                aria-label={`${participant.profile.display_name} share for ${item.name || `item ${idx + 1}`}`}
+                                value={(allocation.amountPaise / 100).toFixed(2)}
+                                onChange={(event) =>
+                                  updateLineItemAllocation(
+                                    item.id,
+                                    participant.userId,
+                                    parseINR(event.target.value) ?? 0
+                                  )
+                                }
+                                className="input w-28 text-sm"
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-muted mt-1 text-right text-xs">
+                      {formatINR(
+                        item.participants.reduce(
+                          (sum, participant) => sum + participant.amountPaise,
+                          0
+                        )
+                      )}
+                      {' / '}
+                      {formatINR(Math.round((parseINR(item.unitPriceStr) ?? 0) * item.quantity))}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              <button
+                onClick={() =>
+                  setLineItems((prev) => [
+                    ...prev,
+                    {
+                      id: crypto.randomUUID(),
+                      name: '',
+                      quantity: 1,
+                      unitPriceStr: '',
+                      participants: [],
+                    },
+                  ])
+                }
+                className="btn-secondary w-full text-sm"
+              >
+                <Plus size={14} /> Add item
+              </button>
+            </div>
+          )}
+
+          {allocations && (
+            <div>
+              <p className="section-title mb-2">Split preview</p>
+              <div className="card overflow-hidden p-0">
+                {allocations.map((a) => {
+                  const pp = participants.find((p) => p.userId === a.userId)?.profile;
+                  return (
+                    <div
+                      key={a.userId}
+                      className="border-app flex items-center gap-3 border-b px-4 py-2.5 last:border-0"
+                    >
+                      <Avatar src={pp?.avatar_url} name={pp?.display_name ?? a.userId} size={28} />
+                      <span className="text-primary flex-1 text-sm">{pp?.display_name}</span>
+                      <span className="text-primary text-sm font-semibold tabular-nums">
+                        {formatINR(a.amountPaise)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {reconciled && (
+                <p className="mt-1 text-right text-xs text-[rgb(var(--color-positive))]">
+                  ✓ Sums to {formatINR(totalPaise)}
+                </p>
+              )}
+            </div>
+          )}
+
+          {error && <ErrorMessage message={error} />}
+
+          <button
+            onClick={() => void handleSave()}
+            className="btn-primary w-full"
+            disabled={saving || !reconciled}
+          >
+            {saving ? <Spinner size={18} /> : null}
+            Save expense
+          </button>
+        </div>
       </div>
-    </div>
+    </SheetDialog>
   );
 }

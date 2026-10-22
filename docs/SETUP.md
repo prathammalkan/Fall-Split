@@ -32,55 +32,66 @@ Open `.env.local` and fill in your Supabase credentials (see [ENVIRONMENT.md](EN
 
 ## 4. Set up Supabase
 
-### 4.1 Create a Supabase project
+### 4.1 Select the existing Supabase project
 
-1. Go to [supabase.com](https://supabase.com) and create a new project.
-2. Wait for the project to finish initializing.
-3. In your Supabase dashboard, navigate to **Settings → API**.
-4. Copy the **Project URL** and **anon/public** key into your `.env.local`.
+Use the project already selected by the owner; do not create another project.
+Confirm its display name, project reference, and region in the Supabase
+Dashboard. In **Settings → API**, configure the **Project URL** and
+**anon/public** key in `.env.local`. Keep database passwords and service-role
+keys out of frontend variables.
 
-### 4.2 Run database migrations
+### 4.2 Reconcile and apply database migrations
 
-Install the Supabase CLI:
-
-```bash
-npm install -g supabase
-```
-
-Link to your project:
+Install or invoke the official Supabase CLI:
 
 ```bash
-supabase login
-supabase link --project-ref <your-project-ref>
+npx supabase --version
 ```
 
-Push the migrations:
+Authenticate locally and link only after verifying the existing project's
+reference:
 
 ```bash
-supabase db push
+npx supabase login
+npx supabase link --project-ref <verified-existing-project-ref>
+npx supabase migration list --linked
 ```
 
-Alternatively, open the **SQL Editor** in your Supabase dashboard and run the contents of each migration file in order:
+The production project has empty application tables and no Auth users after
+the owner-authorized wipe. Its application schema remains in place, its
+repository migration history is not reconciled, and no backup was retained as
+directed. Do not apply migrations, run a linked reset, or execute migration SQL
+in the production SQL Editor. `db:migrate` is preview-only; there is
+intentionally no apply script while this release is blocked:
 
-1. `supabase/migrations/001_core_schema.sql`
-2. `supabase/migrations/002_rls_policies.sql`
-3. `supabase/migrations/003_functions.sql`
+```bash
+npm run db:migrate
+```
+
+Do not use the SQL Editor to replay migration files. The unsafe legacy custom
+runner was removed because it had no migration ledger and retried selected SQL
+errors. See
+[`supabase/MIGRATION_RECONCILIATION.md`](../supabase/MIGRATION_RECONCILIATION.md)
+for the existing-project procedure.
 
 ### 4.3 Configure Auth providers
 
 **Email (required)**
+
 - Supabase enables email auth by default.
 - In **Authentication → Email Templates**, customize the confirmation and magic-link templates.
 - Set the **Site URL** to `http://localhost:5173` for local development.
 - Add `http://localhost:5173/auth/callback` to **Redirect URLs**.
 
 **Google OAuth (optional)**
+
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/).
 2. Enable the OAuth 2.0 API and create credentials.
 3. Authorized redirect URI: `https://<your-project-ref>.supabase.co/auth/v1/callback`
 4. In Supabase → **Authentication → Providers → Google**, enable and add your Client ID and Secret.
 
 **Apple OAuth (optional)**
+
 1. Requires an Apple Developer account ($99/year).
 2. Create a **Services ID** and configure **Sign in with Apple**.
 3. In Supabase → **Authentication → Providers → Apple**, add your credentials.
