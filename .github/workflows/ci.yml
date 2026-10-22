@@ -38,7 +38,7 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://placeholder.supabase.co' }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
-          VITE_APP_URL: ${{ secrets.VITE_APP_URL || 'https://fallsplit.vercel.app' }}
+          VITE_APP_URL: ${{ secrets.VITE_APP_URL || 'https://fall-split.vercel.app' }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
