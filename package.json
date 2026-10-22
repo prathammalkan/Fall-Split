@@ -19,6 +19,7 @@
     "test:ui": "vitest --ui",
     "test:e2e": "playwright test --config=playwright.config.ts",
     "test:e2e:ui": "playwright test --ui",
+    "test:db-concurrency": "node scripts/local-db-concurrency.mjs",
     "test:coverage": "vitest run --coverage",
     "db:migration:list": "supabase migration list --linked",
     "db:migrate": "supabase db push --linked --dry-run",

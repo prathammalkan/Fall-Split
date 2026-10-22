@@ -2,11 +2,11 @@
 
 ## Dashboard Configuration Required
 1. Go to: https://supabase.com/dashboard/project/qkmswepfvgguomfhmkvg/auth/url-configuration
-2. Set Site URL: http://localhost:5173 (change to Vercel URL after deploy)
+2. Set the production Site URL to: https://fall-split.vercel.app (use localhost only for local development)
 3. Add Redirect URLs:
    - http://localhost:5173/auth/callback
-   - https://fallsplit.vercel.app/auth/callback  
-   - https://fallsplit.vercel.app
+   - https://fall-split.vercel.app/auth/callback
+   - https://fall-split.vercel.app
    - https://*.vercel.app/auth/callback
 4. Save changes.
 

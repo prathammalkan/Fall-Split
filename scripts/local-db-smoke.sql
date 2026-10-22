@@ -10,6 +10,14 @@ DECLARE
   retry_id UUID;
   v_itemized_id UUID;
   settlement_id UUID;
+  v_group_id UUID;
+  v_edit_expense_id UUID;
+  v_expected_updated_at TIMESTAMPTZ;
+  v_paid_total BIGINT;
+  v_share_total BIGINT;
+  v_title TEXT;
+  v_invitation_token TEXT;
+  v_invitation_result JSONB;
   failed BOOLEAN;
   total BIGINT;
   test_key TEXT;
@@ -26,6 +34,58 @@ BEGIN
          (user_b, 'dbtest-b@local.invalid', '{}'::JSONB);
 
   PERFORM set_config('request.jwt.claim.sub', user_a::TEXT, TRUE);
+
+  v_group_id := public.create_group_with_owner('DB smoke group', 'Rollback-only test', 'custom');
+  IF NOT EXISTS (
+    SELECT 1 FROM public.groups AS test_group
+    WHERE test_group.id = v_group_id AND test_group.creator_id = user_a
+  ) OR NOT EXISTS (
+    SELECT 1 FROM public.group_members AS member
+    WHERE member.group_id = v_group_id AND member.user_id = user_a
+      AND member.role = 'admin' AND member.removed_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Atomic group creation did not persist the caller as owner/admin';
+  END IF;
+
+  failed := FALSE;
+  BEGIN
+    PERFORM public.create_group_with_owner('   ', NULL, 'custom');
+  EXCEPTION WHEN SQLSTATE '22023' THEN failed := TRUE;
+  END;
+  IF NOT failed OR EXISTS (SELECT 1 FROM public.groups WHERE name = '') THEN
+    RAISE EXCEPTION 'Invalid group creation was not rejected atomically';
+  END IF;
+  RAISE NOTICE 'PASS: group creation atomically assigns caller ownership/admin; invalid input rejected';
+
+  v_invitation_token := repeat('c', 64);
+  INSERT INTO public.invitation_tokens (token, type, creator_id, target_id, max_uses, expires_at)
+  VALUES (v_invitation_token, 'group', user_a, v_group_id, 1, NOW() + INTERVAL '1 day');
+  PERFORM set_config('request.jwt.claim.sub', user_b::TEXT, TRUE);
+  v_invitation_result := public.accept_invitation(v_invitation_token);
+  IF v_invitation_result ->> 'success' IS DISTINCT FROM 'true'
+    OR v_invitation_result ->> 'type' IS DISTINCT FROM 'group'
+    OR v_invitation_result ->> 'groupId' IS DISTINCT FROM v_group_id::TEXT
+    OR NOT EXISTS (
+      SELECT 1 FROM public.group_members AS member
+      WHERE member.group_id = v_group_id AND member.user_id = user_b
+        AND member.role = 'member' AND member.removed_at IS NULL
+        AND member.invited_by = user_a
+    )
+    OR (SELECT invitation.use_count FROM public.invitation_tokens AS invitation
+        WHERE invitation.token = v_invitation_token) <> 1 THEN
+    RAISE EXCEPTION 'Valid group invitation was not accepted with the expected membership';
+  END IF;
+  v_invitation_result := public.accept_invitation(v_invitation_token);
+  IF v_invitation_result ->> 'error' IS NULL THEN
+    RAISE EXCEPTION 'Duplicate or exhausted group invitation was accepted';
+  END IF;
+  PERFORM set_config('request.jwt.claim.sub', user_a::TEXT, TRUE);
+  v_invitation_result := public.accept_invitation(v_invitation_token);
+  IF v_invitation_result ->> 'error' IS NULL THEN
+    RAISE EXCEPTION 'Invitation creator was allowed to accept their own invitation';
+  END IF;
+  RAISE NOTICE 'PASS: group invitation acceptance, membership role, usage limit, duplicate and self-acceptance rejection';
+
   test_key := 'dbtest-regular-expense-0001';
   v_expense_id := public.create_expense_with_records(
     jsonb_build_object(
@@ -109,6 +169,125 @@ BEGIN
     RAISE EXCEPTION 'Invalid share was not rejected atomically';
   END IF;
   RAISE NOTICE 'PASS: invalid shares rejected without a partial expense';
+
+  test_key := 'dbtest-expense-edit-0001';
+  v_edit_expense_id := public.create_expense_with_records(
+    jsonb_build_object(
+      'title', 'Before atomic edit', 'amount_paise', 101,
+      'currency', 'INR', 'split_method', 'equal', 'group_id', NULL,
+      'creator_id', user_a, 'expense_date', '2026-10-22',
+      'category', NULL, 'notes', NULL, 'idempotency_key', test_key
+    ),
+    jsonb_build_array(
+      jsonb_build_object('userId', user_a, 'amountPaise', 100),
+      jsonb_build_object('userId', user_b, 'amountPaise', 1)
+    ),
+    jsonb_build_array(
+      jsonb_build_object('userId', user_a, 'amountPaise', 50),
+      jsonb_build_object('userId', user_b, 'amountPaise', 51)
+    )
+  );
+  SELECT expense.updated_at INTO v_expected_updated_at
+  FROM public.expenses AS expense WHERE expense.id = v_edit_expense_id;
+
+  IF public.update_expense_with_records(
+    v_edit_expense_id, v_expected_updated_at, 'After atomic edit', 3,
+    '2026-10-22', 'updated atomically', 'Other'
+  ) <> v_edit_expense_id THEN
+    RAISE EXCEPTION 'Expense edit returned a different expense ID';
+  END IF;
+
+  SELECT expense.title, expense.updated_at INTO v_title, v_expected_updated_at
+  FROM public.expenses AS expense WHERE expense.id = v_edit_expense_id;
+  SELECT sum(payer.amount_paise) INTO v_paid_total
+  FROM public.expense_payers AS payer WHERE payer.expense_id = v_edit_expense_id;
+  SELECT sum(share.amount_paise) INTO v_share_total
+  FROM public.expense_shares AS share WHERE share.expense_id = v_edit_expense_id;
+  IF v_title <> 'After atomic edit' OR v_paid_total <> 3 OR v_share_total <> 3
+    OR EXISTS (
+      SELECT 1 FROM public.expense_payers AS payer
+      WHERE payer.expense_id = v_edit_expense_id AND payer.amount_paise < 1
+    )
+    OR (SELECT payer.amount_paise FROM public.expense_payers AS payer
+        WHERE payer.expense_id = v_edit_expense_id AND payer.user_id = user_a) <> 2
+    OR (SELECT payer.amount_paise FROM public.expense_payers AS payer
+        WHERE payer.expense_id = v_edit_expense_id AND payer.user_id = user_b) <> 1
+    OR (SELECT share.amount_paise FROM public.expense_shares AS share
+        WHERE share.expense_id = v_edit_expense_id AND share.user_id = user_a) <> 2
+    OR (SELECT share.amount_paise FROM public.expense_shares AS share
+        WHERE share.expense_id = v_edit_expense_id AND share.user_id = user_b) <> 1 THEN
+    RAISE EXCEPTION 'Expense edit failed exact paise reconciliation or minimum payer allocation';
+  END IF;
+
+  failed := FALSE;
+  BEGIN
+    PERFORM public.update_expense_with_records(
+      v_edit_expense_id, v_expected_updated_at - INTERVAL '1 second',
+      'Stale overwrite', 3, '2026-10-22', NULL, NULL
+    );
+  EXCEPTION WHEN SQLSTATE '40001' THEN failed := TRUE;
+  END;
+  SELECT expense.title INTO v_title FROM public.expenses AS expense WHERE expense.id = v_edit_expense_id;
+  IF NOT failed OR v_title <> 'After atomic edit' THEN
+    RAISE EXCEPTION 'Stale expense edit was accepted or changed data';
+  END IF;
+
+  failed := FALSE;
+  BEGIN
+    PERFORM public.update_expense_with_records(
+      v_edit_expense_id, v_expected_updated_at,
+      'Invalid overwrite', 0, '2026-10-22', NULL, NULL
+    );
+  EXCEPTION WHEN SQLSTATE '22023' THEN failed := TRUE;
+  END;
+  SELECT expense.title INTO v_title FROM public.expenses AS expense WHERE expense.id = v_edit_expense_id;
+  IF NOT failed OR v_title <> 'After atomic edit' THEN
+    RAISE EXCEPTION 'Invalid expense edit was accepted or partially applied';
+  END IF;
+
+  PERFORM set_config('request.jwt.claim.sub', user_b::TEXT, TRUE);
+  failed := FALSE;
+  BEGIN
+    PERFORM public.update_expense_with_records(
+      v_edit_expense_id, v_expected_updated_at,
+      'Unauthorized overwrite', 3, '2026-10-22', NULL, NULL
+    );
+  EXCEPTION WHEN insufficient_privilege THEN failed := TRUE;
+  END;
+  SELECT expense.title INTO v_title FROM public.expenses AS expense WHERE expense.id = v_edit_expense_id;
+  IF NOT failed OR v_title <> 'After atomic edit' THEN
+    RAISE EXCEPTION 'Non-creator was allowed to edit or partially change the expense';
+  END IF;
+  PERFORM set_config('request.jwt.claim.sub', user_a::TEXT, TRUE);
+  RAISE NOTICE 'PASS: atomic equal-split edit, minimum payer paise, share/payer reconciliation, stale/invalid/cross-user rejection';
+
+  -- The schema has no cross-table constraint tying item rows to split_method.
+  -- Protect header/payer/share/item reconciliation even if legacy or privileged
+  -- writes have left item rows attached to an otherwise equal-split expense.
+  INSERT INTO public.expense_items (
+    expense_id, name, quantity, unit_price_paise, total_paise, sort_order
+  ) VALUES (v_edit_expense_id, 'legacy inconsistent line', 1, 3, 3, 0);
+  failed := FALSE;
+  BEGIN
+    PERFORM public.update_expense_with_records(
+      v_edit_expense_id, v_expected_updated_at,
+      'Must remain unchanged', 4, '2026-10-22', NULL, NULL
+    );
+  EXCEPTION WHEN SQLSTATE '22023' THEN failed := TRUE;
+  END;
+  SELECT expense.title, expense.amount_paise INTO v_title, total
+  FROM public.expenses AS expense WHERE expense.id = v_edit_expense_id;
+  IF NOT failed OR v_title <> 'After atomic edit' OR total <> 3
+    OR (SELECT sum(payer.amount_paise) FROM public.expense_payers AS payer
+        WHERE payer.expense_id = v_edit_expense_id) <> 3
+    OR (SELECT sum(share.amount_paise) FROM public.expense_shares AS share
+        WHERE share.expense_id = v_edit_expense_id) <> 3
+    OR (SELECT sum(item.total_paise) FROM public.expense_items AS item
+        WHERE item.expense_id = v_edit_expense_id) <> 3 THEN
+    RAISE EXCEPTION 'Itemized records were not preserved when an amount edit was rejected';
+  END IF;
+  RAISE NOTICE 'PASS: amount edits reject itemized records without changing header, payers, shares, or items';
+  DELETE FROM public.expense_items AS item WHERE item.expense_id = v_edit_expense_id;
 
   test_key := 'dbtest-cross-user-spoof-0001';
   PERFORM set_config('request.jwt.claim.sub', user_b::TEXT, TRUE);

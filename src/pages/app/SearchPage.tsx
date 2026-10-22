@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, UserPlus, Check } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
+import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import type { Profile } from '../../types';
 
 // Only expose safe public fields — never email, bio, upi_id in search results
@@ -12,40 +13,58 @@ type PublicProfile = Pick<Profile, 'id' | 'username' | 'display_name' | 'avatar_
 
 export function SearchPage() {
   const { user } = useAuth();
+  const userId = user?.id;
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<PublicProfile[]>([]);
   const [searching, setSearching] = useState(false);
   const [sending, setSending] = useState<string | null>(null);
   const [sent, setSent] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchVersion = useRef(0);
 
   const search = useCallback(
-    async (q: string) => {
-      if (!q.trim() || q.length < 2) {
+    async (q: string, version: number) => {
+      const term = q.trim();
+      if (term.length < 2) {
         setResults([]);
+        setSearchError(null);
+        setSearching(false);
         return;
       }
       setSearching(true);
+      setSearchError(null);
       try {
         // The view exposes only fields approved for profile discovery.
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('discoverable_profiles')
           .select('id, username, display_name, avatar_url')
-          .ilike('username', `${q}%`)
-          .neq('id', user?.id ?? '')
+          .ilike('username', `${term}%`)
+          .neq('id', userId ?? '')
           .limit(15);
+        if (version !== searchVersion.current) return;
+        if (error) {
+          setResults([]);
+          setSearchError('User search failed. Please try again.');
+          return;
+        }
         setResults((data ?? []) as PublicProfile[]);
+      } catch {
+        if (version !== searchVersion.current) return;
+        setResults([]);
+        setSearchError('User search failed. Please try again.');
       } finally {
-        setSearching(false);
+        if (version === searchVersion.current) setSearching(false);
       }
     },
-    [user?.id]
+    [userId]
   );
 
   // Debounce: wait 300ms after last keystroke before searching
   useEffect(() => {
+    const version = ++searchVersion.current;
     const t = setTimeout(() => {
-      void search(query);
+      void search(query, version);
     }, 300);
     return () => clearTimeout(t);
   }, [query, search]);
@@ -62,9 +81,11 @@ export function SearchPage() {
         setActionError(
           'Could not send request. You may already have a connection with this person.'
         );
-        return;
+      } else {
+        setSent((prev) => new Set(prev).add(receiverId));
       }
-      setSent((prev) => new Set(prev).add(receiverId));
+    } catch {
+      setActionError('Could not send request. Check your connection and try again.');
     } finally {
       setSending(null);
     }
@@ -79,7 +100,13 @@ export function SearchPage() {
           <input
             type="search"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              searchVersion.current += 1;
+              setQuery(e.target.value);
+              setResults([]);
+              setSearchError(null);
+              setSearching(false);
+            }}
             className="input pl-9"
             placeholder="Search by username…"
             autoFocus
@@ -97,7 +124,14 @@ export function SearchPage() {
           <p className="mb-3 px-1 text-xs text-[rgb(var(--color-negative))]">{actionError}</p>
         )}
 
-        {results.length > 0 && (
+        {searchError && (
+          <ErrorMessage
+            message={searchError}
+            retry={() => void search(query, ++searchVersion.current)}
+          />
+        )}
+
+        {!searchError && results.length > 0 && (
           <div className="card overflow-hidden p-0">
             {results.map((p) => (
               <div key={p.id} className="list-item">
@@ -125,7 +159,7 @@ export function SearchPage() {
             ))}
           </div>
         )}
-        {results.length === 0 && query.length >= 2 && !searching && (
+        {!searchError && results.length === 0 && query.trim().length >= 2 && !searching && (
           <p className="text-muted py-8 text-center text-sm">
             No users found for &ldquo;{query}&rdquo;
           </p>

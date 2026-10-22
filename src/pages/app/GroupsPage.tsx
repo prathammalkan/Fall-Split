@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Spinner } from '../../components/ui/Spinner';
+import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import type { Group } from '../../types';
 
 const GROUP_ICONS: Record<string, string> = {
@@ -20,17 +21,31 @@ export function GroupsPage() {
   const navigate = useNavigate();
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) return;
-    const { data } = await supabase
-      .from('group_members')
-      .select('group_id, groups (*)')
-      .eq('user_id', user.id)
-      .is('removed_at', null);
-    const rows = (data ?? []) as unknown as { groups: Group | null }[];
-    setGroups(rows.map((d) => d.groups).filter((g): g is Group => g !== null));
-    setLoading(false);
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error: loadError } = await supabase
+        .from('group_members')
+        .select('group_id, groups (*)')
+        .eq('user_id', user.id)
+        .is('removed_at', null);
+      if (loadError) {
+        setGroups([]);
+        setError('Groups could not be loaded. Please try again.');
+        return;
+      }
+      const rows = (data ?? []) as unknown as { groups: Group | null }[];
+      setGroups(rows.map((d) => d.groups).filter((g): g is Group => g !== null));
+    } catch {
+      setGroups([]);
+      setError('Groups could not be loaded. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -56,6 +71,8 @@ export function GroupsPage() {
           <div className="flex justify-center py-8">
             <Spinner size={24} />
           </div>
+        ) : error ? (
+          <ErrorMessage message={error} retry={() => void load()} />
         ) : groups.length === 0 ? (
           <EmptyState
             icon={Layers}
