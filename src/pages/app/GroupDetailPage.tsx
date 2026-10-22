@@ -23,8 +23,9 @@ export function GroupDetailPage() {
   const load = useCallback(async () => {
     if (!groupId) return;
     setLoading(true);
+    setError(null);
     try {
-      const [{ data: g }, { data: m }, { data: e }] = await Promise.all([
+      const [groupResult, membersResult, expensesResult] = await Promise.all([
         supabase.from('groups').select('*').eq('id', groupId).single(),
         supabase
           .from('group_members')
@@ -39,6 +40,14 @@ export function GroupDetailPage() {
           .order('expense_date', { ascending: false })
           .limit(20),
       ]);
+      if (groupResult.error || membersResult.error || expensesResult.error) {
+        setGroup(null);
+        setError('Group details could not be loaded. Please try again.');
+        return;
+      }
+      const { data: g } = groupResult;
+      const { data: m } = membersResult;
+      const { data: e } = expensesResult;
       if (!g) {
         setError('Group not found.');
         return;
@@ -46,6 +55,9 @@ export function GroupDetailPage() {
       setGroup(g);
       setMembers((m ?? []) as unknown as Array<GroupMember & { profile: Profile }>);
       setExpenses(e ?? []);
+    } catch {
+      setGroup(null);
+      setError('Group details could not be loaded. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -64,7 +76,14 @@ export function GroupDetailPage() {
   if (error || !group)
     return (
       <div className="p-4">
-        <ErrorMessage message={error ?? 'Not found'} />
+        <ErrorMessage
+          message={error ?? 'Group not found.'}
+          retry={
+            error === 'Group details could not be loaded. Please try again.'
+              ? () => void load()
+              : undefined
+          }
+        />
       </div>
     );
 

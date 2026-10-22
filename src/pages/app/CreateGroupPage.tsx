@@ -34,32 +34,24 @@ export function CreateGroupPage() {
     setSaving(true);
     setError(null);
 
-    const { data, error: createErr } = await db
-      .from('groups')
-      .insert({
-        name: trimmedName,
-        description: description.trim() || null,
-        type: groupType,
-        currency: 'INR',
-        creator_id: user.id,
-      })
-      .select('id')
-      .single();
+    try {
+      const { data: groupId, error: createError } = await db.rpc('create_group_with_owner', {
+        p_name: trimmedName,
+        p_description: description.trim() || null,
+        p_type: groupType,
+      });
 
-    if (createErr || !data) {
+      if (createError || typeof groupId !== 'string') {
+        setError('Failed to create the group and add you as its admin. Please try again.');
+        return;
+      }
+
+      navigate(`/groups/${groupId}`, { replace: true });
+    } catch {
+      setError('Failed to create the group and add you as its admin. Please try again.');
+    } finally {
       setSaving(false);
-      setError('Failed to create group. Please try again.');
-      return;
     }
-
-    // Add creator as admin member
-    await db.from('group_members').insert({
-      group_id: data.id,
-      user_id: user.id,
-      role: 'admin',
-    });
-
-    navigate(`/groups/${data.id}`, { replace: true });
   };
 
   return (

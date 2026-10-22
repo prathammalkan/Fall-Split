@@ -8,6 +8,7 @@ import expenseParticipantVisibilityMigration from '../../supabase/migrations/017
 import itemizedExpenseMigration from '../../supabase/migrations/018_atomic_itemized_expense_creation.sql?raw';
 import accountRetentionMigration from '../../supabase/migrations/20261021223159_preserve_anonymized_ledger_identity.sql?raw';
 import appTablePrivilegesMigration from '../../supabase/migrations/20261021225434_revoke_excessive_app_table_privileges.sql?raw';
+import atomicGroupExpenseMigration from '../../supabase/migrations/20261022143545_atomic_group_creation_and_expense_edit.sql?raw';
 
 describe('security and financial remediation migration source contracts', () => {
   it('binds payer and share visibility to the outer expense row', () => {
@@ -325,6 +326,40 @@ describe('security and financial remediation migration source contracts', () => 
     expect(appTablePrivilegesMigration).toMatch(/IF current_user <> 'postgres'/);
     expect(appTablePrivilegesMigration).toMatch(
       /v_table_count <> pg_catalog\.cardinality\(v_app_tables\)/
+    );
+  });
+
+  it('creates groups with their owner in one caller-bound RPC', () => {
+    expect(atomicGroupExpenseMigration).toMatch(
+      /CREATE OR REPLACE FUNCTION public\.create_group_with_owner\([\s\S]*?v_user_id UUID := auth\.uid\(\)[\s\S]*?NOT public\.is_active_account\(\)[\s\S]*?INSERT INTO public\.groups[\s\S]*?INSERT INTO public\.group_members[\s\S]*?RETURN v_group_id/
+    );
+    expect(atomicGroupExpenseMigration).toMatch(
+      /REVOKE ALL ON FUNCTION public\.create_group_with_owner\(TEXT, TEXT, public\.group_type\)\s+FROM PUBLIC, anon/
+    );
+    expect(atomicGroupExpenseMigration).toMatch(
+      /GRANT EXECUTE ON FUNCTION public\.create_group_with_owner\(TEXT, TEXT, public\.group_type\)\s+TO authenticated/
+    );
+  });
+
+  it('updates expense headers and financial rows atomically with stale-write protection', () => {
+    expect(atomicGroupExpenseMigration).toMatch(
+      /CREATE OR REPLACE FUNCTION public\.update_expense_with_records\([\s\S]*?FOR UPDATE[\s\S]*?updated_at IS DISTINCT FROM p_expected_updated_at[\s\S]*?split_method <> 'equal'/
+    );
+    expect(atomicGroupExpenseMigration).toMatch(/pg_advisory_xact_lock/);
+    expect(atomicGroupExpenseMigration).toMatch(
+      /payer\.amount_paise::NUMERIC \* \(p_amount_paise - v_payer_count\)::NUMERIC/
+    );
+    expect(atomicGroupExpenseMigration).toMatch(
+      /SET amount_paise = 1 \+ ranked_amounts\.base_amount/
+    );
+    expect(atomicGroupExpenseMigration).toMatch(/UPDATE public\.expense_shares/);
+    expect(atomicGroupExpenseMigration).toMatch(/UPDATE public\.expense_payers/);
+    expect(atomicGroupExpenseMigration).toMatch(/UPDATE public\.expenses/);
+    expect(atomicGroupExpenseMigration).toMatch(
+      /Existing expense payer and share totals do not reconcile/
+    );
+    expect(atomicGroupExpenseMigration).toMatch(
+      /GRANT EXECUTE ON FUNCTION public\.update_expense_with_records\([\s\S]*?TO authenticated/
     );
   });
 });

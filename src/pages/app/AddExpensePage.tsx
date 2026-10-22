@@ -82,6 +82,8 @@ export function AddExpensePage() {
   ]);
   const [availableProfiles, setAvailableProfiles] = useState<Profile[]>([]);
   const [_group, setGroup] = useState<Group | null>(null);
+  const [contactsLoading, setContactsLoading] = useState(true);
+  const [contactsError, setContactsError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [amountStr, setAmountStr] = useState('');
@@ -95,54 +97,69 @@ export function AddExpensePage() {
   const totalPaise = parseINR(amountStr) ?? 0;
 
   const loadContacts = useCallback(async () => {
-    if (!user || !profile) return;
-    let profiles: Profile[] = [profile];
-
-    if (groupIdParam) {
-      const { data: gData } = await supabase
-        .from('groups')
-        .select('*')
-        .eq('id', groupIdParam)
-        .single();
-      if (gData) setGroup(gData as unknown as Group);
-      const { data: members } = await supabase
-        .from('group_members')
-        .select(
-          'user_id, profiles!group_members_user_id_fkey (id, username, display_name, avatar_url)'
-        )
-        .eq('group_id', groupIdParam)
-        .is('removed_at', null);
-      profiles = (members ?? [])
-        .map((m: unknown) => (m as { profiles: Profile }).profiles)
-        .filter(Boolean);
-      setAvailableProfiles(profiles);
-      setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
-    } else {
-      const { data: requestsRaw } = await supabase
-        .from('friend_requests')
-        .select('sender_id, receiver_id')
-        .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-        .eq('status', 'accepted');
-      const requests = (requestsRaw ?? []) as unknown as FriendRequestRow[];
-      const friendIds = requests.map((r) =>
-        r.sender_id === user.id ? r.receiver_id : r.sender_id
+    if (!user || !profile) {
+      setContactsLoading(false);
+      setContactsError(
+        user
+          ? 'Your profile could not be loaded. Refresh the page or try again.'
+          : 'Sign in before adding an expense.'
       );
-      const allIds =
-        friendIdParam && !friendIds.includes(friendIdParam)
-          ? [...friendIds, friendIdParam]
-          : friendIds;
+      return;
+    }
+    setContactsLoading(true);
+    setContactsError(null);
+    try {
+      let profiles: Profile[] = [profile];
 
-      if (allIds.length > 0) {
-        const { data } = await supabase
-          .from('discoverable_profiles')
-          .select('id, username, display_name, avatar_url')
-          .in('id', allIds);
-        profiles = [profile, ...((data ?? []) as unknown as Profile[])];
+      if (groupIdParam) {
+        const [groupResult, memberResult] = await Promise.all([
+          supabase.from('groups').select('*').eq('id', groupIdParam).single(),
+          supabase
+            .from('group_members')
+            .select(
+              'user_id, profiles!group_members_user_id_fkey (id, username, display_name, avatar_url)'
+            )
+            .eq('group_id', groupIdParam)
+            .is('removed_at', null),
+        ]);
+        const groupData = groupResult.data as unknown as Group | null;
+        const memberData = memberResult.data as unknown as Array<{ profiles: Profile }> | null;
+        if (groupResult.error || memberResult.error || !groupData) {
+          throw new Error('Group members could not be loaded. Check access and try again.');
+        }
+        setGroup(groupData);
+        const members = memberData ?? [];
+        profiles = members.map((m) => m.profiles).filter(Boolean);
+      } else {
+        const { data: requestsRaw, error: requestsError } = await supabase
+          .from('friend_requests')
+          .select('sender_id, receiver_id')
+          .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+          .eq('status', 'accepted');
+        if (requestsError) throw new Error('Friends could not be loaded. Please try again.');
+        const requests = (requestsRaw ?? []) as unknown as FriendRequestRow[];
+        const friendIds = requests.map((r) =>
+          r.sender_id === user.id ? r.receiver_id : r.sender_id
+        );
+        const allIds =
+          friendIdParam && !friendIds.includes(friendIdParam)
+            ? [...friendIds, friendIdParam]
+            : friendIds;
+
+        if (allIds.length > 0) {
+          const { data, error: profileError } = await supabase
+            .from('discoverable_profiles')
+            .select('id, username, display_name, avatar_url')
+            .in('id', allIds);
+          if (profileError)
+            throw new Error('Participant profiles could not be loaded. Please try again.');
+          profiles = [profile, ...((data ?? []) as unknown as Profile[])];
+        }
       }
 
       setAvailableProfiles(profiles);
-
-      if (friendIdParam) {
+      setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
+      if (!groupIdParam && friendIdParam) {
         const friendProf = profiles.find((p) => p.id === friendIdParam);
         if (friendProf) {
           setParticipants([
@@ -152,12 +169,21 @@ export function AddExpensePage() {
         } else {
           setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
         }
-      } else {
-        setParticipants(profiles.map((p) => ({ userId: p.id, profile: p })));
       }
+      setPayers([{ userId: user.id, profile, amountStr: '' }]);
+    } catch (loadError) {
+      setGroup(null);
+      setAvailableProfiles([]);
+      setParticipants([]);
+      setPayers([]);
+      setContactsError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Participants could not be loaded. Please try again.'
+      );
+    } finally {
+      setContactsLoading(false);
     }
-
-    setPayers([{ userId: user.id, profile, amountStr: '' }]);
   }, [user, profile, groupIdParam, friendIdParam]);
 
   useEffect(() => {
@@ -306,7 +332,7 @@ export function AddExpensePage() {
   };
 
   const handleSave = async () => {
-    if (!user) return;
+    if (!user || contactsLoading || contactsError) return;
     setError(null);
     if (!title.trim()) {
       setError('Please enter a title.');
@@ -443,6 +469,9 @@ export function AddExpensePage() {
         <div>
           <PageHeader title="Add expense" back />
           <div className="page-content space-y-5 pt-4">
+            {contactsError && (
+              <ErrorMessage message={contactsError} retry={() => void loadContacts()} />
+            )}
             <div>
               <label className="text-muted mb-1 block text-xs">Amount</label>
               <div className="relative">
@@ -618,6 +647,7 @@ export function AddExpensePage() {
 
             <button
               onClick={() => {
+                if (contactsLoading || contactsError) return;
                 if (!title.trim() || totalPaise <= 0) {
                   setError('Enter an amount and description.');
                   return;
@@ -626,6 +656,7 @@ export function AddExpensePage() {
                 setStep('split');
               }}
               className="btn-primary w-full"
+              disabled={contactsLoading || !!contactsError}
             >
               Next: Split
             </button>
@@ -640,6 +671,9 @@ export function AddExpensePage() {
       <div>
         <PageHeader title="Split method" back={() => setStep('basic')} />
         <div className="page-content space-y-4 pt-4">
+          {contactsError && (
+            <ErrorMessage message={contactsError} retry={() => void loadContacts()} />
+          )}
           <div className="card text-center">
             <p className="text-primary text-2xl font-bold">{formatINR(totalPaise)}</p>
             <p className="text-muted text-sm">{title}</p>
@@ -926,7 +960,7 @@ export function AddExpensePage() {
           <button
             onClick={() => void handleSave()}
             className="btn-primary w-full"
-            disabled={saving || !reconciled}
+            disabled={saving || contactsLoading || !!contactsError || !reconciled}
           >
             {saving ? <Spinner size={18} /> : null}
             Save expense

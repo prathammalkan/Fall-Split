@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   UserPlus,
   Search,
@@ -10,6 +10,7 @@ import {
   X,
   Share2,
   QrCode,
+  Camera,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
@@ -20,6 +21,7 @@ import { EmptyState } from '../../components/ui/EmptyState';
 import { Spinner } from '../../components/ui/Spinner';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { ShareInviteModal } from '../../components/ui/ShareInviteModal';
+import { InviteQrScanner } from '../../components/ui/InviteQrScanner';
 import type { Profile } from '../../types';
 
 interface FriendWithBalance {
@@ -45,6 +47,7 @@ interface RawRequest {
 
 export function FriendsPage() {
   const { user, emailVerified } = useAuth();
+  const navigate = useNavigate();
   const [friends, setFriends] = useState<FriendWithBalance[]>([]);
   const [pending, setPending] = useState<PendingRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,7 +59,16 @@ export function FriendsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [requestActionLoading, setRequestActionLoading] = useState<string | null>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showInviteScanner, setShowInviteScanner] = useState(false);
   const searchVersion = useRef(0);
+
+  const handleInviteScan = useCallback(
+    (token: string) => {
+      setShowInviteScanner(false);
+      navigate(`/invite/${token}`);
+    },
+    [navigate]
+  );
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -247,13 +259,22 @@ export function FriendsPage() {
       <PageHeader
         title="Friends"
         actions={
-          <button
-            onClick={() => setShowInviteModal(true)}
-            className="btn-ghost rounded-full p-2"
-            aria-label="Invite friends via QR code or link"
-          >
-            <Share2 size={20} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowInviteScanner(true)}
+              className="btn-ghost rounded-full p-2"
+              aria-label="Scan invitation QR code"
+            >
+              <Camera size={20} />
+            </button>
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="btn-ghost rounded-full p-2"
+              aria-label="Invite friends via QR code or link"
+            >
+              <Share2 size={20} />
+            </button>
+          </div>
         }
       />
       <div className="page-content pt-4">
@@ -437,6 +458,9 @@ export function FriendsPage() {
       </div>
 
       {showInviteModal && <ShareInviteModal onClose={() => setShowInviteModal(false)} />}
+      {showInviteScanner && (
+        <InviteQrScanner onScan={handleInviteScan} onClose={() => setShowInviteScanner(false)} />
+      )}
     </div>
   );
 }
