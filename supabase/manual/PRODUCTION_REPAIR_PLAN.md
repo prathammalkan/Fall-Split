@@ -10,7 +10,9 @@ production database still lacks `public.is_active_account()`,
 and `supabase_migrations.schema_migrations` is absent. No production SQL is
 included here for direct execution.
 
-The current branch is `main` at `4265e23`. The existing untracked
+The production findings were supplied with `main` at `4265e23`. The local
+follow-up commit `c5b7e9f` adds the QR policy fix and this plan; it has not been
+pushed. The existing untracked
 `install_atomic_group_and_expense_edit.sql` is preserved, but it is not a safe
 production repair: its preflight correctly aborts when the active-account
 helper is absent, and it does not repair the broader policy, grants, wrappers,
