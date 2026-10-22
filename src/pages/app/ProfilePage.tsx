@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -37,6 +37,7 @@ export function ProfilePage() {
   const navigate = useNavigate();
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [profileRetrying, setProfileRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -45,6 +46,7 @@ export function ProfilePage() {
   const {
     register,
     handleSubmit,
+    reset,
     formState: { errors },
   } = useForm<ProfileForm>({
     resolver: zodResolver(profileSchema),
@@ -55,6 +57,16 @@ export function ProfilePage() {
       upi_id: profile?.upi_id ?? '',
     },
   });
+
+  useEffect(() => {
+    if (!profile || editMode) return;
+    reset({
+      display_name: profile.display_name,
+      username: profile.username,
+      bio: profile.bio ?? '',
+      upi_id: profile.upi_id ?? '',
+    });
+  }, [profile, editMode, reset]);
 
   const onSave = async (data: ProfileForm) => {
     if (!user) return;
@@ -96,11 +108,28 @@ export function ProfilePage() {
     navigate('/login', { replace: true });
   };
 
+  const retryProfile = async () => {
+    if (profileRetrying) return;
+    setProfileRetrying(true);
+    try {
+      await refreshProfile();
+    } finally {
+      setProfileRetrying(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader title="Profile" />
       <div className="page-content pt-4">
         {error && <ErrorMessage message={error} />}
+        {user && !profile && !deletionBlocked && (
+          <ErrorMessage
+            message="Your profile could not be loaded. Please try again."
+            retry={() => void retryProfile()}
+            retryDisabled={profileRetrying}
+          />
+        )}
 
         <div className="card mb-6 flex flex-col items-center gap-3">
           <Avatar
@@ -112,21 +141,25 @@ export function ProfilePage() {
           />
           <div className="text-center">
             <p className="text-primary font-semibold">
-              {deletionBlocked ? 'Account deactivated' : profile?.display_name}
+              {deletionBlocked
+                ? 'Account deactivated'
+                : (profile?.display_name ?? 'Profile unavailable')}
             </p>
-            {!deletionBlocked && <p className="text-muted text-sm">@{profile?.username}</p>}
+            {!deletionBlocked && profile && (
+              <p className="text-muted text-sm">@{profile.username}</p>
+            )}
             {!deletionBlocked && profile?.bio && (
               <p className="text-secondary mt-1 text-sm">{profile.bio}</p>
             )}
           </div>
-          {!deletionBlocked && (
+          {!deletionBlocked && profile && (
             <button onClick={() => setEditMode(!editMode)} className="btn-secondary">
               {editMode ? 'Cancel' : 'Edit profile'}
             </button>
           )}
         </div>
 
-        {editMode && !deletionBlocked && (
+        {editMode && !deletionBlocked && profile && (
           <form onSubmit={handleSubmit(onSave)} className="card mb-6 space-y-4">
             <div>
               <label className="text-secondary mb-1 block text-sm font-medium">Display name</label>

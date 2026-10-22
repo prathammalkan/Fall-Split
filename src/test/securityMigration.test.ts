@@ -9,8 +9,19 @@ import itemizedExpenseMigration from '../../supabase/migrations/018_atomic_itemi
 import accountRetentionMigration from '../../supabase/migrations/20261021223159_preserve_anonymized_ledger_identity.sql?raw';
 import appTablePrivilegesMigration from '../../supabase/migrations/20261021225434_revoke_excessive_app_table_privileges.sql?raw';
 import atomicGroupExpenseMigration from '../../supabase/migrations/20261022143545_atomic_group_creation_and_expense_edit.sql?raw';
+import triggerFunctionHardeningMigration from '../../supabase/migrations/20261022190155_harden_trigger_function_search_paths.sql?raw';
 
 describe('security and financial remediation migration source contracts', () => {
+  it('pins trigger-function search paths', () => {
+    for (const signature of ['set_updated_at\\(\\)', 'prevent_settlement_history_mutation\\(\\)']) {
+      expect(triggerFunctionHardeningMigration).toMatch(
+        new RegExp(
+          `ALTER FUNCTION public\\.${signature}\\s+SET search_path = pg_catalog, public, pg_temp;`
+        )
+      );
+    }
+  });
+
   it('binds payer and share visibility to the outer expense row', () => {
     expect(expenseParticipantVisibilityMigration).toMatch(
       /payer\.expense_id = expenses\.id[\s\S]*payer\.user_id = auth\.uid\(\)/

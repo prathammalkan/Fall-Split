@@ -1,0 +1,4156 @@
+
+-- ==========================================
+-- MIGRATION: 001_core_schema.sql
+-- ==========================================
+-- ============================================================
+-- Fall Split — Migration 001: Core Schema
+-- ============================================================
+-- Financial sign convention:
+--   positive net_balance  → user is owed money
+--   negative net_balance  → user owes money
+--   zero                  → settled
+-- All monetary amounts stored as INTEGER (paise, 1 INR = 100 paise)
+-- Displayed divided by 100 with 2 decimal places.
+-- ============================================================
+
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ─── PROFILES ─────────────────────────────────────────────────────────────────
+CREATE TABLE public.profiles (
+  id              UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  username        TEXT NOT NULL UNIQUE,
+  display_name    TEXT NOT NULL,
+  avatar_url      TEXT,
+  bio             TEXT,
+  upi_id          TEXT,                        -- for UPI payment links
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_at      TIMESTAMPTZ,                 -- soft-delete timestamp
+
+  CONSTRAINT username_format CHECK (
+    username ~ '^[a-z0-9_]{3,30}$'
+  ),
+  CONSTRAINT display_name_length CHECK (
+    char_length(display_name) BETWEEN 1 AND 60
+  ),
+  CONSTRAINT upi_id_format CHECK (
+    upi_id IS NULL OR upi_id ~ '^[a-zA-Z0-9._\-]+@[a-zA-Z0-9]+$'
+  )
+);
+
+CREATE INDEX idx_profiles_username ON public.profiles (username);
+CREATE INDEX idx_profiles_deleted_at ON public.profiles (deleted_at) WHERE deleted_at IS NULL;
+
+-- ─── FRIEND REQUESTS & RELATIONSHIPS ──────────────────────────────────────────
+CREATE TYPE public.friendship_status AS ENUM (
+  'pending',    -- request sent, awaiting response
+  'accepted',   -- mutual friends
+  'rejected',   -- declined
+  'cancelled',  -- withdrawn by requester
+  'blocked'     -- blocked (future use)
+);
+
+CREATE TABLE public.friend_requests (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  sender_id   UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  receiver_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  status      public.friendship_status NOT NULL DEFAULT 'pending',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT no_self_friend CHECK (sender_id <> receiver_id)
+);
+
+-- Expression-based unique index ensures no duplicate pair regardless of direction
+CREATE UNIQUE INDEX idx_unique_friendship
+  ON public.friend_requests (LEAST(sender_id::text, receiver_id::text), GREATEST(sender_id::text, receiver_id::text));
+
+CREATE INDEX idx_friend_requests_sender   ON public.friend_requests (sender_id);
+CREATE INDEX idx_friend_requests_receiver ON public.friend_requests (receiver_id);
+CREATE INDEX idx_friend_requests_status   ON public.friend_requests (status);
+
+-- ─── INVITATION TOKENS ────────────────────────────────────────────────────────
+CREATE TYPE public.invitation_type AS ENUM ('friend', 'group');
+
+CREATE TABLE public.invitation_tokens (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  token       TEXT NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(24), 'base64url'),
+  type        public.invitation_type NOT NULL,
+  creator_id  UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  target_id   UUID,                           -- group_id for group invitations
+  max_uses    INT NOT NULL DEFAULT 1,
+  use_count   INT NOT NULL DEFAULT 0,
+  expires_at  TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  revoked_at  TIMESTAMPTZ,
+
+  CONSTRAINT max_uses_positive CHECK (max_uses > 0),
+  CONSTRAINT use_count_valid CHECK (use_count >= 0 AND use_count <= max_uses)
+);
+
+CREATE INDEX idx_invitation_tokens_token      ON public.invitation_tokens (token);
+CREATE INDEX idx_invitation_tokens_creator_id ON public.invitation_tokens (creator_id);
+
+-- ─── GROUPS ───────────────────────────────────────────────────────────────────
+CREATE TYPE public.group_type AS ENUM (
+  'trip',
+  'household',
+  'event',
+  'custom'
+);
+
+CREATE TABLE public.groups (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name        TEXT NOT NULL,
+  description TEXT,
+  type        public.group_type NOT NULL DEFAULT 'custom',
+  currency    TEXT NOT NULL DEFAULT 'INR',
+  creator_id  UUID NOT NULL REFERENCES public.profiles(id),
+  archived_at TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT name_length CHECK (char_length(name) BETWEEN 1 AND 80),
+  CONSTRAINT currency_format CHECK (currency ~ '^[A-Z]{3}$')
+);
+
+CREATE INDEX idx_groups_creator_id ON public.groups (creator_id);
+CREATE INDEX idx_groups_archived   ON public.groups (archived_at) WHERE archived_at IS NULL;
+
+-- ─── GROUP MEMBERSHIP ─────────────────────────────────────────────────────────
+CREATE TYPE public.member_role AS ENUM ('admin', 'member');
+
+CREATE TABLE public.group_members (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  group_id    UUID NOT NULL REFERENCES public.groups(id) ON DELETE CASCADE,
+  user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  role        public.member_role NOT NULL DEFAULT 'member',
+  invited_by  UUID REFERENCES public.profiles(id),
+  joined_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  removed_at  TIMESTAMPTZ,
+
+  CONSTRAINT unique_group_member UNIQUE (group_id, user_id)
+);
+
+CREATE INDEX idx_group_members_group_id ON public.group_members (group_id);
+CREATE INDEX idx_group_members_user_id  ON public.group_members (user_id);
+CREATE INDEX idx_group_members_active   ON public.group_members (group_id, user_id)
+  WHERE removed_at IS NULL;
+
+-- ─── EXPENSES ─────────────────────────────────────────────────────────────────
+CREATE TYPE public.split_method AS ENUM (
+  'equal',
+  'unequal',
+  'percentage',
+  'shares',
+  'itemized',
+  'manual'
+);
+
+CREATE TYPE public.expense_status AS ENUM (
+  'active',
+  'voided',
+  'deleted'
+);
+
+CREATE TABLE public.expenses (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  title           TEXT NOT NULL,
+  description     TEXT,
+  amount_paise    BIGINT NOT NULL,             -- total in paise (1 INR = 100 paise)
+  currency        TEXT NOT NULL DEFAULT 'INR',
+  split_method    public.split_method NOT NULL DEFAULT 'equal',
+  group_id        UUID REFERENCES public.groups(id),
+  creator_id      UUID NOT NULL REFERENCES public.profiles(id),
+  expense_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+  category        TEXT,
+  notes           TEXT,
+  receipt_url     TEXT,
+  status          public.expense_status NOT NULL DEFAULT 'active',
+  idempotency_key TEXT UNIQUE,                -- client-generated, prevents duplicate creation
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  voided_at       TIMESTAMPTZ,
+  voided_by       UUID REFERENCES public.profiles(id),
+  void_reason     TEXT,
+
+  CONSTRAINT amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT currency_format CHECK (currency ~ '^[A-Z]{3}$'),
+  CONSTRAINT title_length CHECK (char_length(title) BETWEEN 1 AND 120),
+  CONSTRAINT void_consistency CHECK (
+    (status = 'voided') = (voided_at IS NOT NULL)
+  )
+);
+
+CREATE INDEX idx_expenses_group_id    ON public.expenses (group_id);
+CREATE INDEX idx_expenses_creator_id  ON public.expenses (creator_id);
+CREATE INDEX idx_expenses_status      ON public.expenses (status);
+CREATE INDEX idx_expenses_date        ON public.expenses (expense_date DESC);
+CREATE INDEX idx_expenses_idempotency ON public.expenses (idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+-- ─── EXPENSE PAYER CONTRIBUTIONS ──────────────────────────────────────────────
+-- Who actually paid, and how much (supports multiple payers)
+CREATE TABLE public.expense_payers (
+  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  expense_id    UUID NOT NULL REFERENCES public.expenses(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES public.profiles(id),
+  amount_paise  BIGINT NOT NULL,
+
+  CONSTRAINT amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT unique_payer_per_expense UNIQUE (expense_id, user_id)
+);
+
+CREATE INDEX idx_expense_payers_expense_id ON public.expense_payers (expense_id);
+CREATE INDEX idx_expense_payers_user_id    ON public.expense_payers (user_id);
+
+-- ─── EXPENSE PARTICIPANT SHARES ───────────────────────────────────────────────
+-- What each participant owes (their allocated share)
+CREATE TABLE public.expense_shares (
+  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  expense_id    UUID NOT NULL REFERENCES public.expenses(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES public.profiles(id),
+  amount_paise  BIGINT NOT NULL,             -- their share in paise
+  share_weight  NUMERIC,                     -- for shares method
+  percentage    NUMERIC(5,2),               -- for percentage method
+
+  CONSTRAINT amount_non_negative CHECK (amount_paise >= 0),
+  CONSTRAINT unique_share_per_expense UNIQUE (expense_id, user_id),
+  CONSTRAINT percentage_valid CHECK (
+    percentage IS NULL OR (percentage >= 0 AND percentage <= 100)
+  )
+);
+
+CREATE INDEX idx_expense_shares_expense_id ON public.expense_shares (expense_id);
+CREATE INDEX idx_expense_shares_user_id    ON public.expense_shares (user_id);
+
+-- ─── EXPENSE LINE ITEMS (for itemized splitting) ───────────────────────────────
+CREATE TABLE public.expense_items (
+  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  expense_id    UUID NOT NULL REFERENCES public.expenses(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  quantity      NUMERIC NOT NULL DEFAULT 1,
+  unit_price_paise BIGINT NOT NULL,
+  total_paise   BIGINT NOT NULL,
+  item_type     TEXT NOT NULL DEFAULT 'item',  -- 'item', 'tax', 'discount', 'tip'
+  sort_order    INT NOT NULL DEFAULT 0,
+
+  CONSTRAINT quantity_positive CHECK (quantity > 0),
+  CONSTRAINT unit_price_non_negative CHECK (unit_price_paise >= 0),
+  CONSTRAINT total_non_negative CHECK (total_paise >= 0),
+  CONSTRAINT name_length CHECK (char_length(name) BETWEEN 1 AND 100)
+);
+
+CREATE INDEX idx_expense_items_expense_id ON public.expense_items (expense_id);
+
+-- ─── EXPENSE ITEM PARTICIPANT ALLOCATIONS ─────────────────────────────────────
+CREATE TABLE public.expense_item_allocations (
+  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  item_id       UUID NOT NULL REFERENCES public.expense_items(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES public.profiles(id),
+  amount_paise  BIGINT NOT NULL,
+
+  CONSTRAINT amount_non_negative CHECK (amount_paise >= 0),
+  CONSTRAINT unique_item_user UNIQUE (item_id, user_id)
+);
+
+CREATE INDEX idx_item_alloc_item_id ON public.expense_item_allocations (item_id);
+CREATE INDEX idx_item_alloc_user_id ON public.expense_item_allocations (user_id);
+
+-- ─── EXPENSE AUDIT HISTORY ────────────────────────────────────────────────────
+CREATE TABLE public.expense_history (
+  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  expense_id    UUID NOT NULL REFERENCES public.expenses(id),
+  changed_by    UUID NOT NULL REFERENCES public.profiles(id),
+  change_type   TEXT NOT NULL,               -- 'created', 'edited', 'voided', 'deleted'
+  previous_data JSONB,
+  new_data      JSONB,
+  changed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_expense_history_expense_id ON public.expense_history (expense_id);
+
+-- ─── SETTLEMENTS ──────────────────────────────────────────────────────────────
+CREATE TYPE public.settlement_status AS ENUM (
+  'proposed',   -- initiated by payer
+  'pending',    -- awaiting recipient confirmation
+  'confirmed',  -- both parties confirmed
+  'rejected',   -- recipient rejected
+  'disputed',   -- under dispute
+  'cancelled'   -- cancelled by payer before confirmation
+);
+
+CREATE TABLE public.settlements (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  payer_id         UUID NOT NULL REFERENCES public.profiles(id),
+  recipient_id     UUID NOT NULL REFERENCES public.profiles(id),
+  amount_paise     BIGINT NOT NULL,
+  currency         TEXT NOT NULL DEFAULT 'INR',
+  group_id         UUID REFERENCES public.groups(id),
+  status           public.settlement_status NOT NULL DEFAULT 'proposed',
+  payment_method   TEXT,                     -- 'upi', 'cash', 'bank_transfer', 'other'
+  upi_ref          TEXT,                     -- UPI transaction reference if available
+  notes            TEXT,
+  idempotency_key  TEXT UNIQUE,
+  proposed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  confirmed_at     TIMESTAMPTZ,
+  rejected_at      TIMESTAMPTZ,
+  cancelled_at     TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT no_self_settlement CHECK (payer_id <> recipient_id),
+  CONSTRAINT amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT currency_format CHECK (currency ~ '^[A-Z]{3}$'),
+  CONSTRAINT confirmed_consistency CHECK (
+    (status = 'confirmed') = (confirmed_at IS NOT NULL)
+  )
+);
+
+CREATE INDEX idx_settlements_payer_id     ON public.settlements (payer_id);
+CREATE INDEX idx_settlements_recipient_id ON public.settlements (recipient_id);
+CREATE INDEX idx_settlements_group_id     ON public.settlements (group_id);
+CREATE INDEX idx_settlements_status       ON public.settlements (status);
+
+-- ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
+CREATE TYPE public.notification_type AS ENUM (
+  'friend_request',
+  'friend_accepted',
+  'expense_added',
+  'expense_updated',
+  'expense_deleted',
+  'settlement_proposed',
+  'settlement_confirmed',
+  'settlement_rejected',
+  'group_invitation',
+  'group_member_added',
+  'group_member_removed',
+  'debt_reminder',
+  'balance_summary'
+);
+
+CREATE TABLE public.notifications (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id      UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  type         public.notification_type NOT NULL,
+  title        TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  data         JSONB,                        -- safe non-sensitive metadata
+  read_at      TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT title_length CHECK (char_length(title) BETWEEN 1 AND 100),
+  CONSTRAINT body_length  CHECK (char_length(body) BETWEEN 1 AND 300)
+);
+
+CREATE INDEX idx_notifications_user_id    ON public.notifications (user_id);
+CREATE INDEX idx_notifications_read       ON public.notifications (user_id, read_at) WHERE read_at IS NULL;
+CREATE INDEX idx_notifications_created_at ON public.notifications (created_at DESC);
+
+-- ─── NOTIFICATION PREFERENCES ─────────────────────────────────────────────────
+CREATE TABLE public.notification_preferences (
+  user_id                 UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  push_enabled            BOOLEAN NOT NULL DEFAULT true,
+  email_enabled           BOOLEAN NOT NULL DEFAULT true,
+  expense_notifications   BOOLEAN NOT NULL DEFAULT true,
+  settlement_notifications BOOLEAN NOT NULL DEFAULT true,
+  friend_notifications    BOOLEAN NOT NULL DEFAULT true,
+  reminder_enabled        BOOLEAN NOT NULL DEFAULT true,
+  reminder_day            SMALLINT NOT NULL DEFAULT 1,  -- ISO weekday (1=Monday)
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT reminder_day_valid CHECK (reminder_day BETWEEN 1 AND 7)
+);
+
+-- ─── PUSH SUBSCRIPTIONS ───────────────────────────────────────────────────────
+CREATE TABLE public.push_subscriptions (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  endpoint    TEXT NOT NULL UNIQUE,
+  p256dh      TEXT NOT NULL,
+  auth        TEXT NOT NULL,
+  user_agent  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_used_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_push_subs_user_id ON public.push_subscriptions (user_id);
+
+-- ─── IDEMPOTENCY RECORDS ──────────────────────────────────────────────────────
+-- Server-side idempotency for sync operations
+CREATE TABLE public.idempotency_records (
+  key         TEXT PRIMARY KEY,
+  user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  operation   TEXT NOT NULL,
+  result_id   UUID,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at  TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '7 days'
+);
+
+CREATE INDEX idx_idempotency_user_id   ON public.idempotency_records (user_id);
+CREATE INDEX idx_idempotency_expires   ON public.idempotency_records (expires_at);
+
+-- ─── ACTIVITY LOG ─────────────────────────────────────────────────────────────
+CREATE TABLE public.activity_log (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  actor_id    UUID REFERENCES public.profiles(id),
+  entity_type TEXT NOT NULL,   -- 'expense', 'settlement', 'group', 'friend'
+  entity_id   UUID,
+  action      TEXT NOT NULL,   -- 'created', 'updated', 'deleted', 'confirmed', etc.
+  metadata    JSONB,           -- safe, non-sensitive context
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_activity_log_user_id    ON public.activity_log (user_id);
+CREATE INDEX idx_activity_log_created_at ON public.activity_log (created_at DESC);
+CREATE INDEX idx_activity_log_entity     ON public.activity_log (entity_type, entity_id);
+
+-- ─── UPDATED_AT TRIGGER ───────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER set_updated_at_profiles
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER set_updated_at_groups
+  BEFORE UPDATE ON public.groups
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER set_updated_at_expenses
+  BEFORE UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER set_updated_at_settlements
+  BEFORE UPDATE ON public.settlements
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER set_updated_at_friend_requests
+  BEFORE UPDATE ON public.friend_requests
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TRIGGER set_updated_at_notification_prefs
+  BEFORE UPDATE ON public.notification_preferences
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- ─── AUTO-CREATE PROFILE ON SIGNUP ────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  base_username TEXT;
+  final_username TEXT;
+  counter INT := 0;
+BEGIN
+  -- Generate a unique username from email prefix
+  base_username := lower(regexp_replace(
+    split_part(NEW.email, '@', 1),
+    '[^a-z0-9_]', '', 'g'
+  ));
+
+  -- Ensure minimum length
+  IF char_length(base_username) < 3 THEN
+    base_username := base_username || 'usr';
+  END IF;
+
+  -- Truncate to max allowed
+  base_username := substring(base_username, 1, 25);
+
+  -- Find unique username
+  final_username := base_username;
+  WHILE EXISTS (SELECT 1 FROM public.profiles WHERE username = final_username) LOOP
+    counter := counter + 1;
+    final_username := base_username || counter::TEXT;
+  END LOOP;
+
+  INSERT INTO public.profiles (id, username, display_name, avatar_url)
+  VALUES (
+    NEW.id,
+    final_username,
+    COALESCE(
+      NEW.raw_user_meta_data->>'full_name',
+      NEW.raw_user_meta_data->>'name',
+      split_part(NEW.email, '@', 1)
+    ),
+    NEW.raw_user_meta_data->>'avatar_url'
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  -- Create default notification preferences
+  INSERT INTO public.notification_preferences (user_id)
+  VALUES (NEW.id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ==========================================
+-- MIGRATION: 002_rls_policies.sql
+-- ==========================================
+-- ============================================================
+-- Fall Split — Migration 002: Row Level Security Policies
+-- ============================================================
+-- Default-deny: no public access without explicit RLS policy.
+-- ============================================================
+
+-- Enable RLS on all tables
+ALTER TABLE public.profiles               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.friend_requests        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invitation_tokens      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.groups                 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_members          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_payers         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_shares         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_items          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_item_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_history        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.settlements            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notification_preferences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.push_subscriptions     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.idempotency_records    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.activity_log           ENABLE ROW LEVEL SECURITY;
+
+-- ─── HELPER FUNCTIONS ─────────────────────────────────────────────────────────
+
+-- Check if two users are friends
+CREATE OR REPLACE FUNCTION public.are_friends(user_a UUID, user_b UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.friend_requests
+    WHERE status = 'accepted'
+      AND LEAST(sender_id, receiver_id)    = LEAST(user_a, user_b)
+      AND GREATEST(sender_id, receiver_id) = GREATEST(user_a, user_b)
+  );
+$$;
+
+-- Check if a user is an active member of a group
+CREATE OR REPLACE FUNCTION public.is_group_member(p_user_id UUID, p_group_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.group_members
+    WHERE user_id = p_user_id
+      AND group_id = p_group_id
+      AND removed_at IS NULL
+  );
+$$;
+
+-- Check if a user is a group admin
+CREATE OR REPLACE FUNCTION public.is_group_admin(p_user_id UUID, p_group_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.group_members
+    WHERE user_id = p_user_id
+      AND group_id = p_group_id
+      AND role = 'admin'
+      AND removed_at IS NULL
+  );
+$$;
+
+-- Check if user can access an expense (is a payer or share recipient)
+CREATE OR REPLACE FUNCTION public.can_access_expense(p_user_id UUID, p_expense_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.expenses e
+    WHERE e.id = p_expense_id
+      AND e.status <> 'deleted'
+      AND (
+        e.creator_id = p_user_id
+        OR EXISTS (
+          SELECT 1 FROM public.expense_payers ep
+          WHERE ep.expense_id = e.id AND ep.user_id = p_user_id
+        )
+        OR EXISTS (
+          SELECT 1 FROM public.expense_shares es
+          WHERE es.expense_id = e.id AND es.user_id = p_user_id
+        )
+        OR (
+          e.group_id IS NOT NULL AND public.is_group_member(p_user_id, e.group_id)
+        )
+      )
+  );
+$$;
+
+-- ─── PROFILES POLICIES ────────────────────────────────────────────────────────
+
+-- Own profile: full access
+CREATE POLICY "profiles_own_select"
+  ON public.profiles FOR SELECT
+  USING (auth.uid() = id AND deleted_at IS NULL);
+
+CREATE POLICY "profiles_own_update"
+  ON public.profiles FOR UPDATE
+  USING (auth.uid() = id)
+  WITH CHECK (
+    auth.uid() = id
+    -- Prevent users from elevating their own privileges via metadata
+    -- (username/display_name/avatar/bio/upi_id only)
+  );
+
+-- Public username search (no email exposure, no financial data)
+CREATE POLICY "profiles_username_search"
+  ON public.profiles FOR SELECT
+  USING (
+    deleted_at IS NULL
+    AND auth.uid() IS NOT NULL
+    AND auth.uid() <> id
+  );
+
+-- ─── FRIEND REQUESTS POLICIES ─────────────────────────────────────────────────
+
+CREATE POLICY "friend_requests_select"
+  ON public.friend_requests FOR SELECT
+  USING (
+    auth.uid() IS NOT NULL
+    AND (sender_id = auth.uid() OR receiver_id = auth.uid())
+  );
+
+CREATE POLICY "friend_requests_insert"
+  ON public.friend_requests FOR INSERT
+  WITH CHECK (
+    auth.uid() = sender_id
+    AND sender_id <> receiver_id
+    AND auth.uid() IS NOT NULL
+  );
+
+CREATE POLICY "friend_requests_update"
+  ON public.friend_requests FOR UPDATE
+  USING (
+    -- Receiver can accept/reject; sender can cancel their own pending request
+    (receiver_id = auth.uid() AND status = 'pending')
+    OR (sender_id = auth.uid() AND status = 'pending')
+  )
+  WITH CHECK (
+    (receiver_id = auth.uid() AND status IN ('accepted', 'rejected'))
+    OR (sender_id = auth.uid() AND status = 'cancelled')
+  );
+
+-- ─── INVITATION TOKENS POLICIES ───────────────────────────────────────────────
+
+CREATE POLICY "invitation_tokens_own_crud"
+  ON public.invitation_tokens FOR ALL
+  USING (creator_id = auth.uid())
+  WITH CHECK (creator_id = auth.uid());
+
+-- Allow token lookup by token value (for accepting invitations)
+CREATE POLICY "invitation_tokens_redeem"
+  ON public.invitation_tokens FOR SELECT
+  USING (
+    auth.uid() IS NOT NULL
+    AND revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at > NOW())
+    AND use_count < max_uses
+  );
+
+-- ─── GROUPS POLICIES ──────────────────────────────────────────────────────────
+
+CREATE POLICY "groups_member_select"
+  ON public.groups FOR SELECT
+  USING (public.is_group_member(auth.uid(), id));
+
+CREATE POLICY "groups_creator_insert"
+  ON public.groups FOR INSERT
+  WITH CHECK (creator_id = auth.uid() AND auth.uid() IS NOT NULL);
+
+CREATE POLICY "groups_admin_update"
+  ON public.groups FOR UPDATE
+  USING (public.is_group_admin(auth.uid(), id))
+  WITH CHECK (public.is_group_admin(auth.uid(), id));
+
+-- ─── GROUP MEMBERS POLICIES ───────────────────────────────────────────────────
+
+CREATE POLICY "group_members_member_select"
+  ON public.group_members FOR SELECT
+  USING (public.is_group_member(auth.uid(), group_id));
+
+CREATE POLICY "group_members_admin_insert"
+  ON public.group_members FOR INSERT
+  WITH CHECK (public.is_group_admin(auth.uid(), group_id) OR (
+    -- Creator can add themselves as first member
+    EXISTS (SELECT 1 FROM public.groups g WHERE g.id = group_id AND g.creator_id = auth.uid())
+    AND user_id = auth.uid()
+  ));
+
+CREATE POLICY "group_members_admin_update"
+  ON public.group_members FOR UPDATE
+  USING (public.is_group_admin(auth.uid(), group_id))
+  WITH CHECK (public.is_group_admin(auth.uid(), group_id));
+
+-- Users can remove themselves
+CREATE POLICY "group_members_self_leave"
+  ON public.group_members FOR UPDATE
+  USING (user_id = auth.uid() AND removed_at IS NULL)
+  WITH CHECK (user_id = auth.uid());
+
+-- ─── EXPENSES POLICIES ────────────────────────────────────────────────────────
+
+CREATE POLICY "expenses_participant_select"
+  ON public.expenses FOR SELECT
+  USING (
+    status <> 'deleted'
+    AND (
+      creator_id = auth.uid()
+      OR EXISTS (
+        SELECT 1 FROM public.expense_payers ep
+        WHERE ep.expense_id = id AND ep.user_id = auth.uid()
+      )
+      OR EXISTS (
+        SELECT 1 FROM public.expense_shares es
+        WHERE es.expense_id = id AND es.user_id = auth.uid()
+      )
+      OR (
+        group_id IS NOT NULL AND public.is_group_member(auth.uid(), group_id)
+      )
+    )
+  );
+
+CREATE POLICY "expenses_creator_insert"
+  ON public.expenses FOR INSERT
+  WITH CHECK (
+    creator_id = auth.uid()
+    AND auth.uid() IS NOT NULL
+    AND (group_id IS NULL OR public.is_group_member(auth.uid(), group_id))
+  );
+
+CREATE POLICY "expenses_creator_update"
+  ON public.expenses FOR UPDATE
+  USING (
+    creator_id = auth.uid()
+    AND status = 'active'
+  )
+  WITH CHECK (
+    creator_id = auth.uid()
+    AND (group_id IS NULL OR public.is_group_member(auth.uid(), group_id))
+  );
+
+-- ─── EXPENSE_PAYERS POLICIES ──────────────────────────────────────────────────
+
+CREATE POLICY "expense_payers_select"
+  ON public.expense_payers FOR SELECT
+  USING (public.can_access_expense(auth.uid(), expense_id));
+
+CREATE POLICY "expense_payers_insert"
+  ON public.expense_payers FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "expense_payers_update"
+  ON public.expense_payers FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "expense_payers_delete"
+  ON public.expense_payers FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+-- ─── EXPENSE_SHARES POLICIES ──────────────────────────────────────────────────
+
+CREATE POLICY "expense_shares_select"
+  ON public.expense_shares FOR SELECT
+  USING (public.can_access_expense(auth.uid(), expense_id));
+
+CREATE POLICY "expense_shares_insert"
+  ON public.expense_shares FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "expense_shares_update"
+  ON public.expense_shares FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "expense_shares_delete"
+  ON public.expense_shares FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+-- ─── EXPENSE_ITEMS POLICIES ───────────────────────────────────────────────────
+
+CREATE POLICY "expense_items_select"
+  ON public.expense_items FOR SELECT
+  USING (public.can_access_expense(auth.uid(), expense_id));
+
+CREATE POLICY "expense_items_creator_mutate"
+  ON public.expense_items FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id AND e.creator_id = auth.uid()
+    )
+  );
+
+-- ─── EXPENSE_ITEM_ALLOCATIONS POLICIES ────────────────────────────────────────
+
+CREATE POLICY "item_alloc_select"
+  ON public.expense_item_allocations FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expense_items ei
+      WHERE ei.id = item_id
+        AND public.can_access_expense(auth.uid(), ei.expense_id)
+    )
+  );
+
+CREATE POLICY "item_alloc_creator_mutate"
+  ON public.expense_item_allocations FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expense_items ei
+      JOIN public.expenses e ON e.id = ei.expense_id
+      WHERE ei.id = item_id AND e.creator_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.expense_items ei
+      JOIN public.expenses e ON e.id = ei.expense_id
+      WHERE ei.id = item_id AND e.creator_id = auth.uid()
+    )
+  );
+
+-- ─── EXPENSE_HISTORY POLICIES ─────────────────────────────────────────────────
+
+CREATE POLICY "expense_history_participant_select"
+  ON public.expense_history FOR SELECT
+  USING (public.can_access_expense(auth.uid(), expense_id));
+
+-- ─── SETTLEMENTS POLICIES ─────────────────────────────────────────────────────
+
+CREATE POLICY "settlements_parties_select"
+  ON public.settlements FOR SELECT
+  USING (
+    payer_id = auth.uid()
+    OR recipient_id = auth.uid()
+    OR (group_id IS NOT NULL AND public.is_group_member(auth.uid(), group_id))
+  );
+
+CREATE POLICY "settlements_payer_insert"
+  ON public.settlements FOR INSERT
+  WITH CHECK (
+    payer_id = auth.uid()
+    AND payer_id <> recipient_id
+    AND auth.uid() IS NOT NULL
+  );
+
+-- Only the payer may update (cancel, add notes) or the recipient (confirm/reject)
+CREATE POLICY "settlements_parties_update"
+  ON public.settlements FOR UPDATE
+  USING (payer_id = auth.uid() OR recipient_id = auth.uid())
+  WITH CHECK (
+    -- Payer can cancel a proposed/pending settlement
+    (payer_id = auth.uid() AND status = 'cancelled')
+    -- Recipient can confirm or reject a proposed/pending settlement
+    OR (recipient_id = auth.uid() AND status IN ('confirmed', 'rejected'))
+  );
+
+-- ─── NOTIFICATIONS POLICIES ───────────────────────────────────────────────────
+
+CREATE POLICY "notifications_own"
+  ON public.notifications FOR ALL
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+-- ─── NOTIFICATION_PREFERENCES POLICIES ───────────────────────────────────────
+
+CREATE POLICY "notification_prefs_own"
+  ON public.notification_preferences FOR ALL
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+-- ─── PUSH_SUBSCRIPTIONS POLICIES ─────────────────────────────────────────────
+
+CREATE POLICY "push_subs_own"
+  ON public.push_subscriptions FOR ALL
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+-- ─── IDEMPOTENCY_RECORDS POLICIES ────────────────────────────────────────────
+
+CREATE POLICY "idempotency_own"
+  ON public.idempotency_records FOR ALL
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+-- ─── ACTIVITY_LOG POLICIES ───────────────────────────────────────────────────
+
+CREATE POLICY "activity_log_own"
+  ON public.activity_log FOR SELECT
+  USING (user_id = auth.uid());
+
+-- ==========================================
+-- MIGRATION: 003_functions.sql
+-- ==========================================
+-- Migration 003: Server-side functions for secure operations
+-- These functions run with SECURITY DEFINER to enforce server-side logic
+
+-- ============================================================
+-- accept_invitation RPC
+-- Called by authenticated user to accept a friend or group invitation
+-- ============================================================
+CREATE OR REPLACE FUNCTION accept_invitation(
+  p_token TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_token_record invitation_tokens%ROWTYPE;
+  v_caller_id UUID;
+  v_result JSONB;
+BEGIN
+  -- Get caller identity
+  v_caller_id := auth.uid();
+  IF v_caller_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  -- Look up token
+  SELECT * INTO v_token_record
+  FROM invitation_tokens
+  WHERE token = p_token
+    AND revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at > NOW())
+    AND use_count < max_uses
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('error', 'Invalid, expired, or exhausted invitation token');
+  END IF;
+
+  -- Prevent creator from using their own invitation
+  IF v_token_record.creator_id = v_caller_id THEN
+    RETURN jsonb_build_object('error', 'Cannot use your own invitation');
+  END IF;
+
+  -- Handle friend invitation
+  IF v_token_record.type = 'friend' THEN
+    -- Check if an accepted friendship already exists in either direction.
+    IF EXISTS (
+      SELECT 1 FROM friend_requests
+      WHERE ((sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
+          OR (sender_id = v_caller_id AND receiver_id = v_token_record.creator_id))
+        AND status = 'accepted'
+    ) THEN
+      RETURN jsonb_build_object('error', 'Already friends');
+    END IF;
+
+    -- Insert or update the friendship row without assuming a direction-specific unique index.
+    IF EXISTS (
+      SELECT 1 FROM friend_requests
+      WHERE (sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
+         OR (sender_id = v_caller_id AND receiver_id = v_token_record.creator_id)
+    ) THEN
+      UPDATE friend_requests
+      SET status = 'accepted', updated_at = NOW()
+      WHERE (sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
+         OR (sender_id = v_caller_id AND receiver_id = v_token_record.creator_id);
+    ELSE
+      INSERT INTO friend_requests (sender_id, receiver_id, status)
+      VALUES (v_token_record.creator_id, v_caller_id, 'accepted');
+    END IF;
+
+    -- Increment use count
+    UPDATE invitation_tokens
+    SET use_count = use_count + 1
+    WHERE id = v_token_record.id;
+
+    v_result := jsonb_build_object(
+      'success', true,
+      'type', 'friend',
+      'friendId', v_token_record.creator_id
+    );
+
+  -- Handle group invitation
+  ELSIF v_token_record.type = 'group' THEN
+    IF v_token_record.target_id IS NULL THEN
+      RETURN jsonb_build_object('error', 'Invalid group invitation: no group specified');
+    END IF;
+
+    -- Check if already a member
+    IF EXISTS (
+      SELECT 1 FROM group_members
+      WHERE group_id = v_token_record.target_id
+        AND user_id = v_caller_id
+        AND removed_at IS NULL
+    ) THEN
+      RETURN jsonb_build_object('error', 'Already a member of this group');
+    END IF;
+
+    -- Add as member
+    INSERT INTO group_members (group_id, user_id, role, invited_by)
+    VALUES (v_token_record.target_id, v_caller_id, 'member', v_token_record.creator_id)
+    ON CONFLICT (group_id, user_id) DO UPDATE
+      SET removed_at = NULL, role = 'member', invited_by = v_token_record.creator_id;
+
+    -- Increment use count
+    UPDATE invitation_tokens
+    SET use_count = use_count + 1
+    WHERE id = v_token_record.id;
+
+    v_result := jsonb_build_object(
+      'success', true,
+      'type', 'group',
+      'groupId', v_token_record.target_id
+    );
+
+  ELSE
+    RETURN jsonb_build_object('error', 'Unknown invitation type');
+  END IF;
+
+  RETURN v_result;
+END;
+$$;
+
+-- Revoke EXECUTE from public, grant only to authenticated users
+REVOKE EXECUTE ON FUNCTION accept_invitation(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION accept_invitation(TEXT) TO authenticated;
+
+-- ============================================================
+-- get_friend_balances: compute net balances between the caller
+-- and all friends, considering shared expenses + settlements.
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_friend_balances()
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH caller AS (SELECT auth.uid() AS uid),
+  -- What caller paid and others owe caller
+  payer_credits AS (
+    SELECT
+      es.user_id AS other_user,
+      es.amount_paise AS credit_paise
+    FROM expense_shares es
+    JOIN expense_payers ep ON ep.expense_id = es.expense_id AND ep.user_id = (SELECT uid FROM caller)
+    JOIN expenses e ON e.id = es.expense_id AND e.status = 'active'
+    WHERE es.user_id != (SELECT uid FROM caller)
+  ),
+  -- What caller owes others who paid
+  debtor_charges AS (
+    SELECT
+      ep.user_id AS other_user,
+      es.amount_paise AS charge_paise
+    FROM expense_shares es
+    JOIN expense_payers ep ON ep.expense_id = es.expense_id AND ep.user_id != (SELECT uid FROM caller)
+    JOIN expenses e ON e.id = es.expense_id AND e.status = 'active'
+    WHERE es.user_id = (SELECT uid FROM caller)
+  ),
+  -- Confirmed settlements where caller paid
+  caller_paid_settlements AS (
+    SELECT recipient_id AS other_user, amount_paise
+    FROM settlements
+    WHERE payer_id = (SELECT uid FROM caller) AND status = 'confirmed'
+  ),
+  -- Confirmed settlements where caller received
+  caller_received_settlements AS (
+    SELECT payer_id AS other_user, amount_paise
+    FROM settlements
+    WHERE recipient_id = (SELECT uid FROM caller) AND status = 'confirmed'
+  ),
+  combined AS (
+    SELECT other_user, credit_paise AS net FROM payer_credits
+    UNION ALL
+    SELECT other_user, -charge_paise FROM debtor_charges
+    UNION ALL
+    SELECT other_user, -amount_paise FROM caller_paid_settlements
+    UNION ALL
+    SELECT other_user, amount_paise FROM caller_received_settlements
+  ),
+  aggregated AS (
+    SELECT
+      other_user,
+      SUM(net)::BIGINT AS net_paise
+    FROM combined
+    GROUP BY other_user
+    HAVING SUM(net) != 0
+  )
+  SELECT
+    other_user AS other_user_id,
+    net_paise,
+    GREATEST(net_paise, 0)::BIGINT AS owed_to_paise,
+    GREATEST(-net_paise, 0)::BIGINT AS owing_paise
+  FROM aggregated;
+$$;
+
+REVOKE EXECUTE ON FUNCTION get_friend_balances() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_friend_balances() TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 004_settlements_rejected_at.sql
+-- ==========================================
+-- Migration 004: Add missing rejected_at column to settlements
+-- The SettlementsPage calls update({ rejected_at: ... }) but this column was absent.
+-- Also adds cancelled_at consistency check.
+
+ALTER TABLE public.settlements
+  ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ;
+
+-- Update consistency check: rejected status must have rejected_at set
+-- (only add if not already there)
+ALTER TABLE public.settlements
+  DROP CONSTRAINT IF EXISTS rejected_consistency;
+
+ALTER TABLE public.settlements
+  ADD CONSTRAINT rejected_consistency CHECK (
+    (status = 'rejected') = (rejected_at IS NOT NULL)
+  );
+
+-- Add index for query efficiency
+CREATE INDEX IF NOT EXISTS idx_settlements_rejected_at
+  ON public.settlements (rejected_at) WHERE rejected_at IS NOT NULL;
+
+COMMENT ON COLUMN public.settlements.rejected_at IS
+  'Timestamp when the recipient rejected this settlement; set when status = rejected';
+
+-- ==========================================
+-- MIGRATION: 005_fix_friend_balances.sql
+-- ==========================================
+-- Migration 005: Fix get_friend_balances for correct multi-payer expense handling
+--
+-- Root cause of previous bug in the original get_friend_balances:
+-- The payer_credits CTE credited ALL other participants' shares to the caller
+-- whenever caller was a payer — this overcounts when there are multiple payers.
+-- Similarly, debtor_charges charged the caller's full share for EACH payer,
+-- producing double-charges in multi-payer scenarios.
+--
+-- Correct model for multi-payer expenses:
+-- For each (payer, participant) pair in an expense:
+--   payer is owed: participant_share * (payer_contribution / expense_total)
+-- This is proportional to how much of the expense each payer covered.
+--
+-- Example: ₹100 expense, Payers: A=₹60, B=₹40. Participants: A=₹40, B=₹35, C=₹25.
+--   A→B credit: 35 * 60/100 = ₹21    A→C credit: 25 * 60/100 = ₹15
+--   B→A credit: 40 * 40/100 = ₹16    B→C credit: 25 * 40/100 = ₹10
+-- Net A↔B: A owed ₹21, owes ₹16, net A is owed ₹5 by B.
+-- Total paid by A (₹60) - A's share (₹40) = net credit ₹20, split proportionally.
+
+CREATE OR REPLACE FUNCTION get_friend_balances()
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise     BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise   BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH caller AS (SELECT auth.uid() AS uid),
+
+  -- Per-(payer, participant) ledger entries for active expenses.
+  -- credit_paise = how much the participant owes the payer for this expense.
+  -- Uses proportional split: payer's fraction of total × participant's share.
+  -- This correctly handles any number of payers per expense.
+  expense_ledger AS (
+    SELECT
+      ep.user_id                                            AS payer_id,
+      es.user_id                                            AS participant_id,
+      ROUND(
+        es.amount_paise::NUMERIC
+        * ep.amount_paise::NUMERIC
+        / e.amount_paise::NUMERIC
+      )::BIGINT                                             AS credit_paise
+    FROM expenses e
+    JOIN expense_payers ep ON ep.expense_id = e.id
+    JOIN expense_shares es ON es.expense_id = e.id
+    WHERE e.status = 'active'
+      AND ep.user_id <> es.user_id  -- skip self-contribution entries
+  ),
+
+  -- What other users owe the caller (caller is payer, others are participants)
+  caller_as_payer AS (
+    SELECT participant_id AS other_user, credit_paise AS net
+    FROM expense_ledger
+    WHERE payer_id = (SELECT uid FROM caller)
+  ),
+
+  -- What the caller owes other users (caller is participant, others are payers)
+  caller_as_participant AS (
+    SELECT payer_id AS other_user, -credit_paise AS net
+    FROM expense_ledger
+    WHERE participant_id = (SELECT uid FROM caller)
+  ),
+
+  -- Confirmed settlements: caller paid someone → reduces what caller owes them
+  -- (or if over-paid, creates a new credit for the caller)
+  -- Sign convention: positive net means other_user owes caller.
+  -- If caller paid other_user, caller's debt to them is reduced → net goes up by amount.
+  caller_paid AS (
+    SELECT recipient_id AS other_user, amount_paise AS net
+    FROM settlements
+    WHERE payer_id = (SELECT uid FROM caller) AND status = 'confirmed'
+  ),
+
+  -- Confirmed settlements: someone paid the caller → reduces their debt to the caller
+  caller_received AS (
+    SELECT payer_id AS other_user, -amount_paise AS net
+    FROM settlements
+    WHERE recipient_id = (SELECT uid FROM caller) AND status = 'confirmed'
+  ),
+
+  all_flows AS (
+    SELECT other_user, net FROM caller_as_payer
+    UNION ALL
+    SELECT other_user, net FROM caller_as_participant
+    UNION ALL
+    SELECT other_user, net FROM caller_paid
+    UNION ALL
+    SELECT other_user, net FROM caller_received
+  ),
+
+  aggregated AS (
+    SELECT
+      other_user,
+      SUM(net)::BIGINT AS net_paise
+    FROM all_flows
+    GROUP BY other_user
+    HAVING ABS(SUM(net)) >= 1  -- filter out sub-paise rounding noise
+  )
+
+  SELECT
+    other_user              AS other_user_id,
+    net_paise,
+    GREATEST(net_paise, 0)::BIGINT  AS owed_to_paise,
+    GREATEST(-net_paise, 0)::BIGINT AS owing_paise
+  FROM aggregated;
+$$;
+
+REVOKE EXECUTE ON FUNCTION get_friend_balances() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_friend_balances() TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 006_fix_accept_invitation_and_group_balances.sql
+-- ==========================================
+-- Migration 006: Fix accept_invitation ON CONFLICT and add get_group_balances
+--
+-- Bug fixed:
+--   The `accept_invitation` function used ON CONFLICT (sender_id, receiver_id) which
+--   does NOT match the actual unique index `idx_unique_friendship` which is defined as:
+--     UNIQUE (LEAST(sender_id::text, receiver_id::text), GREATEST(sender_id::text, receiver_id::text))
+--   As a result, when a friend_requests row exists in the reverse direction
+--   (receiver_id=creator, sender_id=caller), the INSERT would succeed and create a
+--   duplicate row violating uniqueness — or fail unexpectedly with a unique violation
+--   error that is not handled.
+--
+-- Fix: replace ON CONFLICT with explicit SELECT + INSERT/UPDATE logic.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION accept_invitation(
+  p_token TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_token_record  invitation_tokens%ROWTYPE;
+  v_caller_id     UUID;
+  v_existing_req  friend_requests%ROWTYPE;
+  v_result        JSONB;
+BEGIN
+  -- Identify caller
+  v_caller_id := auth.uid();
+  IF v_caller_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  -- Lock and fetch token (prevents concurrent double-use)
+  SELECT * INTO v_token_record
+  FROM invitation_tokens
+  WHERE token = p_token
+    AND revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at > NOW())
+    AND use_count < max_uses
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('error', 'Invalid, expired, or exhausted invitation token');
+  END IF;
+
+  -- Prevent self-use
+  IF v_token_record.creator_id = v_caller_id THEN
+    RETURN jsonb_build_object('error', 'Cannot use your own invitation');
+  END IF;
+
+  -- ── Friend invitation ──────────────────────────────────────────────────────
+  IF v_token_record.type = 'friend' THEN
+
+    -- Look for any existing friendship record regardless of direction
+    SELECT * INTO v_existing_req
+    FROM friend_requests
+    WHERE (
+      (sender_id = v_token_record.creator_id AND receiver_id = v_caller_id)
+      OR
+      (sender_id = v_caller_id AND receiver_id = v_token_record.creator_id)
+    )
+    LIMIT 1;
+
+    IF FOUND THEN
+      IF v_existing_req.status = 'accepted' THEN
+        RETURN jsonb_build_object('error', 'Already friends');
+      END IF;
+      -- Update existing row to accepted (handles pending, rejected, cancelled)
+      UPDATE friend_requests
+      SET status = 'accepted', updated_at = NOW()
+      WHERE id = v_existing_req.id;
+    ELSE
+      -- Insert new accepted friendship record
+      INSERT INTO friend_requests (sender_id, receiver_id, status)
+      VALUES (v_token_record.creator_id, v_caller_id, 'accepted');
+    END IF;
+
+    -- Increment token use count
+    UPDATE invitation_tokens
+    SET use_count = use_count + 1
+    WHERE id = v_token_record.id;
+
+    v_result := jsonb_build_object(
+      'success', true,
+      'type', 'friend',
+      'friendId', v_token_record.creator_id
+    );
+
+  -- ── Group invitation ────────────────────────────────────────────────────────
+  ELSIF v_token_record.type = 'group' THEN
+    IF v_token_record.target_id IS NULL THEN
+      RETURN jsonb_build_object('error', 'Invalid group invitation: no group specified');
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM group_members
+      WHERE group_id = v_token_record.target_id
+        AND user_id = v_caller_id
+        AND removed_at IS NULL
+    ) THEN
+      RETURN jsonb_build_object('error', 'Already a member of this group');
+    END IF;
+
+    -- Add or re-add member (handles previously removed members)
+    INSERT INTO group_members (group_id, user_id, role, invited_by)
+    VALUES (v_token_record.target_id, v_caller_id, 'member', v_token_record.creator_id)
+    ON CONFLICT (group_id, user_id) DO UPDATE
+      SET removed_at = NULL,
+          role       = 'member',
+          invited_by = v_token_record.creator_id;
+
+    UPDATE invitation_tokens
+    SET use_count = use_count + 1
+    WHERE id = v_token_record.id;
+
+    v_result := jsonb_build_object(
+      'success', true,
+      'type', 'group',
+      'groupId', v_token_record.target_id
+    );
+
+  ELSE
+    RETURN jsonb_build_object('error', 'Unknown invitation type');
+  END IF;
+
+  RETURN v_result;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION accept_invitation(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION accept_invitation(TEXT) TO authenticated;
+
+
+-- ============================================================
+-- get_group_balances: compute per-member net balances within a
+-- specific group for the calling user.
+--
+-- Returns one row per other_user_id where there is a non-zero
+-- balance arising from group expenses and confirmed settlements
+-- that reference any group expense.
+--
+-- net_paise > 0 → other_user owes the caller (within this group)
+-- net_paise < 0 → caller owes other_user (within this group)
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_group_balances(p_group_id UUID)
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise     BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise   BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH caller AS (SELECT auth.uid() AS uid),
+
+  -- Per-(payer, participant) ledger for active expenses in this group
+  expense_ledger AS (
+    SELECT
+      ep.user_id                                         AS payer_id,
+      es.user_id                                         AS participant_id,
+      ROUND(
+        es.amount_paise::NUMERIC
+        * ep.amount_paise::NUMERIC
+        / e.amount_paise::NUMERIC
+      )::BIGINT                                          AS credit_paise
+    FROM expenses e
+    JOIN expense_payers ep ON ep.expense_id = e.id
+    JOIN expense_shares es ON es.expense_id = e.id
+    WHERE e.status    = 'active'
+      AND e.group_id  = p_group_id
+      AND ep.user_id <> es.user_id
+  ),
+
+  caller_as_payer AS (
+    SELECT participant_id AS other_user, credit_paise AS net
+    FROM expense_ledger
+    WHERE payer_id = (SELECT uid FROM caller)
+  ),
+
+  caller_as_participant AS (
+    SELECT payer_id AS other_user, -credit_paise AS net
+    FROM expense_ledger
+    WHERE participant_id = (SELECT uid FROM caller)
+  ),
+
+  -- Confirmed settlements that settle debts created within this group.
+  -- We attribute a settlement to the group when the settlement's
+  -- expense context is this group (best-effort: filter settlements
+  -- where the payer/recipient pair has a balance in this group).
+  caller_paid AS (
+    SELECT s.recipient_id AS other_user, s.amount_paise AS net
+    FROM settlements s
+    WHERE s.payer_id = (SELECT uid FROM caller)
+      AND s.status   = 'confirmed'
+      AND s.group_id = p_group_id
+  ),
+
+  caller_received AS (
+    SELECT s.payer_id AS other_user, -s.amount_paise AS net
+    FROM settlements s
+    WHERE s.recipient_id = (SELECT uid FROM caller)
+      AND s.status       = 'confirmed'
+      AND s.group_id     = p_group_id
+  ),
+
+  all_flows AS (
+    SELECT other_user, net FROM caller_as_payer
+    UNION ALL
+    SELECT other_user, net FROM caller_as_participant
+    UNION ALL
+    SELECT other_user, net FROM caller_paid
+    UNION ALL
+    SELECT other_user, net FROM caller_received
+  ),
+
+  aggregated AS (
+    SELECT
+      other_user,
+      SUM(net)::BIGINT AS net_paise
+    FROM all_flows
+    GROUP BY other_user
+    HAVING ABS(SUM(net)) >= 1
+  )
+
+  SELECT
+    other_user              AS other_user_id,
+    net_paise,
+    GREATEST(net_paise, 0)::BIGINT  AS owed_to_paise,
+    GREATEST(-net_paise, 0)::BIGINT AS owing_paise
+  FROM aggregated;
+$$;
+
+REVOKE EXECUTE ON FUNCTION get_group_balances(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_group_balances(UUID) TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 007_sync_schema_columns.sql
+-- ==========================================
+-- Migration 007: Add missing columns to bring live DB in sync with application types
+-- These columns exist in database.types.ts but were absent from the live schema.
+
+-- ─── groups.avatar_url ────────────────────────────────────────────────────────
+-- The TypeScript types declare avatar_url on groups; add it to the DB to match.
+ALTER TABLE public.groups
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+-- ─── expense_shares timestamps ────────────────────────────────────────────────
+-- Add created_at / updated_at to expense_shares for consistency and audit trail.
+ALTER TABLE public.expense_shares
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- ─── expense_items timestamps ─────────────────────────────────────────────────
+ALTER TABLE public.expense_items
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- ─── Add updated_at trigger for groups (has updated_at already) ───────────────
+-- Already handled by existing trigger in 001_core_schema.sql.
+-- No action needed.
+
+-- ─── Verify: check function existence ────────────────────────────────────────
+-- get_friend_balances, get_group_balances, accept_invitation all confirmed live.
+-- No function migrations needed.
+
+-- ==========================================
+-- MIGRATION: 008_delete_account_rpc.sql
+-- ==========================================
+-- Migration 008: Add delete_account SQL function
+-- Replaces the Edge Function dependency with a SECURITY DEFINER RPC
+-- that the client can call directly with their JWT.
+
+CREATE OR REPLACE FUNCTION public.delete_account()
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user_id UUID := auth.uid();
+BEGIN
+  IF v_user_id IS NULL THEN
+    RETURN json_build_object('error', 'Not authenticated');
+  END IF;
+
+  -- 1. Soft-delete and anonymize the profile
+  UPDATE public.profiles
+  SET
+    deleted_at   = NOW(),
+    display_name = '[Deleted User]',
+    username     = 'deleted_' || substring(v_user_id::text, 1, 8),
+    avatar_url   = NULL,
+    bio          = NULL,
+    upi_id       = NULL,
+    updated_at   = NOW()
+  WHERE id = v_user_id;
+
+  -- 2. Remove from all active group memberships
+  UPDATE public.group_members
+  SET removed_at = NOW()
+  WHERE user_id = v_user_id
+    AND removed_at IS NULL;
+
+  -- 3. Cancel pending friend requests
+  UPDATE public.friend_requests
+  SET status = 'cancelled', updated_at = NOW()
+  WHERE (sender_id = v_user_id OR receiver_id = v_user_id)
+    AND status = 'pending';
+
+  -- 4. Revoke all invitation tokens
+  UPDATE public.invitation_tokens
+  SET revoked_at = NOW()
+  WHERE creator_id = v_user_id
+    AND revoked_at IS NULL;
+
+  -- 5. Cancel any proposed/pending settlements they initiated
+  UPDATE public.settlements
+  SET status = 'cancelled', cancelled_at = NOW()
+  WHERE payer_id = v_user_id
+    AND status IN ('proposed', 'pending');
+
+  -- Note: The auth.users deletion must happen client-side after this call
+  -- using supabase.auth.admin.deleteUser() — the client signs out immediately
+  -- after calling this function, rendering the account inaccessible.
+  -- For full auth deletion, the Edge Function handles step 5 when deployed.
+
+  RETURN json_build_object('success', true);
+END;
+$$;
+
+-- Grant execute to authenticated users only
+REVOKE ALL ON FUNCTION public.delete_account() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.delete_account() TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 009_settlement_integrity.sql
+-- ==========================================
+-- Keep settlement creation and confirmation atomic and bound to current debt.
+-- Confirmed settlements are permanent ledger records; users can only transition
+-- a proposed settlement through the RPCs below.
+
+DROP POLICY IF EXISTS "settlements_payer_insert" ON public.settlements;
+DROP POLICY IF EXISTS "settlements_parties_update" ON public.settlements;
+
+CREATE OR REPLACE FUNCTION public.prevent_settlement_history_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Settlement history cannot be deleted';
+  END IF;
+
+  IF OLD.status = 'confirmed' THEN
+    RAISE EXCEPTION 'Confirmed settlements are immutable';
+  END IF;
+
+  IF ROW(
+    NEW.payer_id, NEW.recipient_id, NEW.amount_paise, NEW.currency,
+    NEW.group_id, NEW.idempotency_key, NEW.proposed_at, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.payer_id, OLD.recipient_id, OLD.amount_paise, OLD.currency,
+    OLD.group_id, OLD.idempotency_key, OLD.proposed_at, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'Settlement details cannot be changed';
+  END IF;
+
+  IF NEW.status IS DISTINCT FROM OLD.status
+    AND NOT (
+      OLD.status IN ('proposed', 'pending')
+      AND NEW.status IN ('confirmed', 'rejected', 'cancelled')
+    )
+  THEN
+    RAISE EXCEPTION 'Invalid settlement status transition';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER settlement_history_immutable
+  BEFORE UPDATE OR DELETE ON public.settlements
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_settlement_history_mutation();
+
+CREATE OR REPLACE FUNCTION public.propose_settlement(
+  p_recipient_id UUID,
+  p_amount_paise BIGINT,
+  p_idempotency_key TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_payer_id UUID := auth.uid();
+  v_net_paise BIGINT;
+  v_settlement_id UUID;
+  v_existing public.settlements%ROWTYPE;
+BEGIN
+  IF v_payer_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
+  END IF;
+  IF p_recipient_id IS NULL OR p_recipient_id = v_payer_id THEN
+    RAISE EXCEPTION 'Invalid settlement recipient' USING ERRCODE = '22023';
+  END IF;
+  IF p_amount_paise IS NULL OR p_amount_paise <= 0 THEN
+    RAISE EXCEPTION 'Settlement amount must be positive' USING ERRCODE = '22023';
+  END IF;
+  IF p_idempotency_key IS NULL OR char_length(p_idempotency_key) NOT BETWEEN 16 AND 128 THEN
+    RAISE EXCEPTION 'A valid idempotency key is required' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT * INTO v_existing
+  FROM public.settlements
+  WHERE idempotency_key = p_idempotency_key;
+  IF FOUND THEN
+    IF v_existing.payer_id = v_payer_id
+      AND v_existing.recipient_id = p_recipient_id
+      AND v_existing.amount_paise = p_amount_paise THEN
+      RETURN v_existing.id;
+    END IF;
+    RAISE EXCEPTION 'Idempotency key was already used for another settlement'
+      USING ERRCODE = '22023';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    LEAST(v_payer_id::TEXT, p_recipient_id::TEXT) || ':' ||
+    GREATEST(v_payer_id::TEXT, p_recipient_id::TEXT), 0
+  ));
+
+  SELECT * INTO v_existing
+  FROM public.settlements
+  WHERE idempotency_key = p_idempotency_key;
+  IF FOUND THEN
+    IF v_existing.payer_id = v_payer_id
+      AND v_existing.recipient_id = p_recipient_id
+      AND v_existing.amount_paise = p_amount_paise THEN
+      RETURN v_existing.id;
+    END IF;
+    RAISE EXCEPTION 'Idempotency key was already used for another settlement'
+      USING ERRCODE = '22023';
+  END IF;
+
+  SELECT net_paise INTO v_net_paise
+  FROM public.get_friend_balances()
+  WHERE other_user_id = p_recipient_id;
+
+  IF COALESCE(v_net_paise, 0) >= 0 OR p_amount_paise > -v_net_paise THEN
+    RAISE EXCEPTION 'Settlement amount exceeds the outstanding debt'
+      USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO public.settlements (
+    payer_id, recipient_id, amount_paise, currency, idempotency_key, status
+  )
+  VALUES (
+    v_payer_id, p_recipient_id, p_amount_paise, 'INR', p_idempotency_key, 'proposed'
+  )
+  RETURNING id INTO v_settlement_id;
+
+  RETURN v_settlement_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.respond_to_settlement(
+  p_settlement_id UUID,
+  p_action TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_caller_id UUID := auth.uid();
+  v_settlement public.settlements%ROWTYPE;
+  v_net_paise BIGINT;
+BEGIN
+  IF v_caller_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
+  END IF;
+  IF p_action IS NULL OR p_action NOT IN ('confirm', 'reject') THEN
+    RAISE EXCEPTION 'Invalid settlement action' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT * INTO v_settlement
+  FROM public.settlements
+  WHERE id = p_settlement_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Settlement not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    LEAST(v_settlement.payer_id::TEXT, v_settlement.recipient_id::TEXT) || ':' ||
+    GREATEST(v_settlement.payer_id::TEXT, v_settlement.recipient_id::TEXT), 0
+  ));
+
+  SELECT * INTO v_settlement
+  FROM public.settlements
+  WHERE id = p_settlement_id
+  FOR UPDATE;
+
+  IF v_settlement.recipient_id <> v_caller_id THEN
+    RAISE EXCEPTION 'Only the recipient can respond to this settlement'
+      USING ERRCODE = '42501';
+  END IF;
+  IF v_settlement.status NOT IN ('proposed', 'pending') THEN
+    RAISE EXCEPTION 'Settlement is no longer awaiting confirmation'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF p_action = 'confirm' THEN
+    SELECT net_paise INTO v_net_paise
+    FROM public.get_friend_balances()
+    WHERE other_user_id = v_settlement.payer_id;
+
+    IF COALESCE(v_net_paise, 0) < v_settlement.amount_paise THEN
+      RAISE EXCEPTION 'Settlement exceeds the remaining outstanding debt'
+        USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE public.settlements
+    SET status = 'confirmed', confirmed_at = NOW()
+    WHERE id = p_settlement_id;
+  ELSE
+    UPDATE public.settlements
+    SET status = 'rejected', rejected_at = NOW()
+    WHERE id = p_settlement_id;
+  END IF;
+
+  RETURN p_settlement_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.cancel_settlement(p_settlement_id UUID)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_caller_id UUID := auth.uid();
+  v_settlement public.settlements%ROWTYPE;
+BEGIN
+  IF v_caller_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_settlement
+  FROM public.settlements
+  WHERE id = p_settlement_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Settlement not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    LEAST(v_settlement.payer_id::TEXT, v_settlement.recipient_id::TEXT) || ':' ||
+    GREATEST(v_settlement.payer_id::TEXT, v_settlement.recipient_id::TEXT), 0
+  ));
+
+  SELECT * INTO v_settlement
+  FROM public.settlements
+  WHERE id = p_settlement_id
+  FOR UPDATE;
+
+  IF v_settlement.payer_id <> v_caller_id THEN
+    RAISE EXCEPTION 'Only the payer can cancel this settlement'
+      USING ERRCODE = '42501';
+  END IF;
+  IF v_settlement.status NOT IN ('proposed', 'pending') THEN
+    RAISE EXCEPTION 'Settlement is no longer cancellable'
+      USING ERRCODE = '22023';
+  END IF;
+
+  UPDATE public.settlements
+  SET status = 'cancelled', cancelled_at = NOW()
+  WHERE id = p_settlement_id;
+
+  RETURN p_settlement_id;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.respond_to_settlement(UUID, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.cancel_settlement(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.respond_to_settlement(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_settlement(UUID) TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 010_invitation_preview.sql
+-- ==========================================
+-- Expose only the inviter's display name and invitation type before sign-in.
+-- High-entropy invitation tokens are required; no group/private data is returned.
+-- Token lookup must go through this function; RLS must not expose every live token.
+DROP POLICY IF EXISTS "invitation_tokens_redeem" ON public.invitation_tokens;
+
+CREATE OR REPLACE FUNCTION public.get_invitation_preview(p_token TEXT)
+RETURNS JSONB
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+    'type', invitation.type,
+    'creator_name', profile.display_name
+  )
+  FROM public.invitation_tokens AS invitation
+  JOIN public.profiles AS profile ON profile.id = invitation.creator_id
+  WHERE invitation.token = p_token
+    AND profile.deleted_at IS NULL
+    AND invitation.revoked_at IS NULL
+    AND (invitation.expires_at IS NULL OR invitation.expires_at > NOW())
+    AND invitation.use_count < invitation.max_uses
+  LIMIT 1;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.get_invitation_preview(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_invitation_preview(TEXT) TO anon, authenticated;
+
+-- ==========================================
+-- MIGRATION: 011_group_balance_membership_guard.sql
+-- ==========================================
+-- SECURITY DEFINER bypasses RLS, so validate group membership inside the RPC.
+CREATE OR REPLACE FUNCTION public.get_group_balances(p_group_id UUID)
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH caller AS (
+    SELECT auth.uid() AS uid
+    WHERE auth.uid() IS NOT NULL
+      AND public.is_group_member(auth.uid(), p_group_id)
+  ),
+  expense_ledger AS (
+    SELECT
+      ep.user_id AS payer_id,
+      es.user_id AS participant_id,
+      ROUND(
+        es.amount_paise::NUMERIC
+        * ep.amount_paise::NUMERIC
+        / e.amount_paise::NUMERIC
+      )::BIGINT AS credit_paise
+    FROM public.expenses e
+    JOIN public.expense_payers ep ON ep.expense_id = e.id
+    JOIN public.expense_shares es ON es.expense_id = e.id
+    WHERE e.status = 'active'
+      AND e.group_id = p_group_id
+      AND ep.user_id <> es.user_id
+  ),
+  caller_as_payer AS (
+    SELECT participant_id AS other_user, credit_paise AS net
+    FROM expense_ledger
+    WHERE payer_id = (SELECT uid FROM caller)
+  ),
+  caller_as_participant AS (
+    SELECT payer_id AS other_user, -credit_paise AS net
+    FROM expense_ledger
+    WHERE participant_id = (SELECT uid FROM caller)
+  ),
+  caller_paid AS (
+    SELECT s.recipient_id AS other_user, s.amount_paise AS net
+    FROM public.settlements s
+    WHERE s.payer_id = (SELECT uid FROM caller)
+      AND s.status = 'confirmed'
+      AND s.group_id = p_group_id
+  ),
+  caller_received AS (
+    SELECT s.payer_id AS other_user, -s.amount_paise AS net
+    FROM public.settlements s
+    WHERE s.recipient_id = (SELECT uid FROM caller)
+      AND s.status = 'confirmed'
+      AND s.group_id = p_group_id
+  ),
+  all_flows AS (
+    SELECT other_user, net FROM caller_as_payer
+    UNION ALL
+    SELECT other_user, net FROM caller_as_participant
+    UNION ALL
+    SELECT other_user, net FROM caller_paid
+    UNION ALL
+    SELECT other_user, net FROM caller_received
+  ),
+  aggregated AS (
+    SELECT other_user, SUM(net)::BIGINT AS net_paise
+    FROM all_flows
+    GROUP BY other_user
+    HAVING ABS(SUM(net)) >= 1
+  )
+  SELECT
+    other_user,
+    net_paise,
+    GREATEST(net_paise, 0)::BIGINT,
+    GREATEST(-net_paise, 0)::BIGINT
+  FROM aggregated;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.get_group_balances(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_group_balances(UUID) TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 012_security_definer_hardening.sql
+-- ==========================================
+-- Harden SECURITY DEFINER functions that were created without an explicit search_path
+-- and restrict helper access to authenticated callers instead of PUBLIC.
+
+ALTER FUNCTION public.are_friends(UUID, UUID) SET search_path = public;
+ALTER FUNCTION public.is_group_member(UUID, UUID) SET search_path = public;
+ALTER FUNCTION public.is_group_admin(UUID, UUID) SET search_path = public;
+ALTER FUNCTION public.can_access_expense(UUID, UUID) SET search_path = public;
+ALTER FUNCTION public.handle_new_user() SET search_path = public;
+ALTER FUNCTION public.delete_account() SET search_path = public;
+
+REVOKE ALL ON FUNCTION public.are_friends(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_group_member(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_group_admin(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.can_access_expense(UUID, UUID) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION public.are_friends(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_group_member(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_group_admin(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.can_access_expense(UUID, UUID) TO authenticated;
+
+-- Revoke default PUBLIC access on the helper functions used by RLS policies.
+-- Policies still execute correctly for authenticated callers.
+
+-- ==========================================
+-- MIGRATION: 013_security_financial_reconciliation.sql
+-- ==========================================
+-- Forward-only reconciliation for audited Fall Split environments.
+-- Do not mark migrations 001-012 as applied based on object presence alone:
+-- no repository migration ledger was found during the read-only audit.
+
+-- A member may leave only through this narrow operation; the direct UPDATE
+-- policy allowed the member to change their own role before this migration.
+DROP POLICY IF EXISTS "group_members_self_leave" ON public.group_members;
+
+CREATE OR REPLACE FUNCTION public.leave_group(p_group_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+BEGIN
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.group_members
+  SET removed_at = pg_catalog.now()
+  WHERE group_id = p_group_id
+    AND user_id = v_user_id
+    AND removed_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Active group membership not found' USING ERRCODE = 'P0002';
+  END IF;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.leave_group(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.leave_group(UUID) TO authenticated;
+
+-- Replace broad profile row access with a public-safe discoverability view and
+-- a caller-bound RPC for own/friend profile details.
+REVOKE ALL ON TABLE public.profiles FROM PUBLIC, anon, authenticated;
+REVOKE SELECT (id, username, display_name, avatar_url, bio, upi_id, created_at, updated_at, deleted_at)
+  ON TABLE public.profiles FROM PUBLIC, anon, authenticated;
+REVOKE UPDATE (id, username, display_name, avatar_url, bio, upi_id, created_at, updated_at, deleted_at)
+  ON TABLE public.profiles FROM PUBLIC, anon, authenticated;
+GRANT SELECT (id, username, display_name, avatar_url)
+  ON TABLE public.profiles TO authenticated;
+GRANT UPDATE (username, display_name, bio, upi_id)
+  ON TABLE public.profiles TO authenticated;
+
+CREATE OR REPLACE VIEW public.discoverable_profiles
+WITH (security_invoker = true)
+AS
+  SELECT id, username, display_name, avatar_url
+  FROM public.profiles;
+
+GRANT SELECT ON public.discoverable_profiles TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.get_profile_for_user(p_user_id UUID)
+RETURNS TABLE (
+  id UUID,
+  username TEXT,
+  display_name TEXT,
+  avatar_url TEXT,
+  bio TEXT,
+  upi_id TEXT,
+  created_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ,
+  deleted_at TIMESTAMPTZ
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+  SELECT
+    profile.id,
+    profile.username,
+    profile.display_name,
+    profile.avatar_url,
+    profile.bio,
+    profile.upi_id,
+    profile.created_at,
+    profile.updated_at,
+    profile.deleted_at
+  FROM public.profiles AS profile
+  WHERE profile.id = p_user_id
+    AND profile.deleted_at IS NULL
+    AND auth.uid() IS NOT NULL
+    AND (
+      profile.id = auth.uid()
+      OR public.are_friends(auth.uid(), profile.id)
+    );
+$function$;
+
+REVOKE ALL ON FUNCTION public.get_profile_for_user(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_profile_for_user(UUID) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.get_settlement_recipient_upis()
+RETURNS TABLE (settlement_id UUID, upi_id TEXT)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+  SELECT settlement.id, profile.upi_id
+  FROM public.settlements AS settlement
+  JOIN public.profiles AS profile ON profile.id = settlement.recipient_id
+  WHERE settlement.payer_id = auth.uid()
+    AND auth.uid() IS NOT NULL
+    AND settlement.status IN ('proposed', 'pending')
+    AND profile.deleted_at IS NULL;
+$function$;
+
+REVOKE ALL ON FUNCTION public.get_settlement_recipient_upis() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_settlement_recipient_upis() TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.delete_account()
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+  v_profile_id UUID;
+BEGIN
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.profiles
+  SET
+    deleted_at = pg_catalog.now(),
+    display_name = '[Deleted User]',
+    username = 'deleted_' || pg_catalog.substring(v_user_id::TEXT, 1, 8),
+    avatar_url = NULL,
+    bio = NULL,
+    upi_id = NULL,
+    updated_at = pg_catalog.now()
+  WHERE id = v_user_id
+  RETURNING id INTO v_profile_id;
+
+  IF v_profile_id IS NULL THEN
+    RAISE EXCEPTION 'Account profile not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  UPDATE public.group_members
+  SET removed_at = pg_catalog.now()
+  WHERE user_id = v_user_id
+    AND removed_at IS NULL;
+
+  UPDATE public.friend_requests
+  SET status = 'cancelled', updated_at = pg_catalog.now()
+  WHERE (sender_id = v_user_id OR receiver_id = v_user_id)
+    AND status = 'pending';
+
+  UPDATE public.invitation_tokens
+  SET revoked_at = pg_catalog.now()
+  WHERE creator_id = v_user_id
+    AND revoked_at IS NULL;
+
+  UPDATE public.settlements
+  SET status = 'cancelled', cancelled_at = pg_catalog.now()
+  WHERE payer_id = v_user_id
+    AND status IN ('proposed', 'pending');
+
+  RETURN pg_catalog.json_build_object('success', TRUE);
+END;
+$function$;
+
+-- Allocate proportional integer-paise shares with controlled rounding. The
+-- augmenting-path pass preserves both participant totals and payer totals.
+CREATE OR REPLACE FUNCTION public.expense_pair_allocations(p_user_id UUID, p_group_id UUID)
+RETURNS TABLE (
+  expense_id UUID,
+  group_id UUID,
+  payer_id UUID,
+  participant_id UUID,
+  amount_paise BIGINT
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+DECLARE
+  v_expense RECORD;
+  v_payer_ids UUID[];
+  v_payer_amounts BIGINT[];
+  v_participant_ids UUID[];
+  v_participant_shares BIGINT[];
+  v_base BIGINT[][];
+  v_remainders NUMERIC[][];
+  v_selected BOOLEAN[][];
+  v_row_remaining INTEGER[];
+  v_column_remaining INTEGER[];
+  v_parent INTEGER[];
+  v_queue INTEGER[];
+  v_node_count INTEGER;
+  v_payer_count INTEGER;
+  v_participant_count INTEGER;
+  v_total_paid BIGINT;
+  v_total_shares BIGINT;
+  v_row_base BIGINT;
+  v_column_base BIGINT;
+  v_numerator NUMERIC;
+  v_start_row INTEGER;
+  v_head INTEGER;
+  v_node INTEGER;
+  v_candidate INTEGER;
+  v_column_node INTEGER;
+  v_row_node INTEGER;
+  v_previous_column_node INTEGER;
+  v_endpoint INTEGER;
+  v_i INTEGER;
+  v_j INTEGER;
+BEGIN
+  IF p_user_id IS NULL THEN
+    RETURN;
+  END IF;
+
+  FOR v_expense IN
+    SELECT expense.id, expense.group_id, expense.amount_paise
+    FROM public.expenses AS expense
+    WHERE expense.status = 'active'
+      AND (p_group_id IS NULL OR expense.group_id = p_group_id)
+      AND (
+        EXISTS (
+          SELECT 1 FROM public.expense_payers AS payer
+          WHERE payer.expense_id = expense.id AND payer.user_id = p_user_id
+        )
+        OR EXISTS (
+          SELECT 1 FROM public.expense_shares AS share
+          WHERE share.expense_id = expense.id AND share.user_id = p_user_id
+        )
+      )
+    ORDER BY expense.id
+  LOOP
+    SELECT
+      pg_catalog.array_agg(payer.user_id ORDER BY payer.user_id),
+      pg_catalog.array_agg(payer.amount_paise ORDER BY payer.user_id),
+      pg_catalog.sum(payer.amount_paise)
+    INTO v_payer_ids, v_payer_amounts, v_total_paid
+    FROM public.expense_payers AS payer
+    WHERE payer.expense_id = v_expense.id;
+
+    SELECT
+      pg_catalog.array_agg(share.user_id ORDER BY share.user_id),
+      pg_catalog.array_agg(share.amount_paise ORDER BY share.user_id),
+      pg_catalog.sum(share.amount_paise)
+    INTO v_participant_ids, v_participant_shares, v_total_shares
+    FROM public.expense_shares AS share
+    WHERE share.expense_id = v_expense.id;
+
+    IF v_payer_ids IS NULL OR v_participant_ids IS NULL
+      OR v_total_paid IS NULL OR v_total_shares IS NULL THEN
+      RAISE EXCEPTION 'Active expense % is missing payers or participant shares', v_expense.id
+        USING ERRCODE = '23514';
+    END IF;
+
+    IF v_total_paid <= 0
+      OR v_total_paid <> v_total_shares
+      OR v_total_paid <> v_expense.amount_paise THEN
+      RAISE EXCEPTION 'Active expense % payer, share, and total amounts do not reconcile', v_expense.id
+        USING ERRCODE = '23514';
+    END IF;
+
+    v_payer_count := pg_catalog.array_length(v_payer_ids, 1);
+    v_participant_count := pg_catalog.array_length(v_participant_ids, 1);
+    v_node_count := v_payer_count + v_participant_count;
+    v_base := pg_catalog.array_fill(0::BIGINT, ARRAY[v_participant_count, v_payer_count]);
+    v_remainders := pg_catalog.array_fill(0::NUMERIC, ARRAY[v_participant_count, v_payer_count]);
+    v_selected := pg_catalog.array_fill(FALSE, ARRAY[v_participant_count, v_payer_count]);
+    v_row_remaining := pg_catalog.array_fill(0, ARRAY[v_participant_count]);
+    v_column_remaining := pg_catalog.array_fill(0, ARRAY[v_payer_count]);
+
+    FOR v_i IN 1..v_participant_count LOOP
+      v_row_base := 0;
+      FOR v_j IN 1..v_payer_count LOOP
+        v_numerator := v_participant_shares[v_i]::NUMERIC * v_payer_amounts[v_j]::NUMERIC;
+        v_base[v_i][v_j] := pg_catalog.floor(v_numerator / v_total_paid)::BIGINT;
+        v_remainders[v_i][v_j] := pg_catalog.mod(v_numerator, v_total_paid::NUMERIC);
+        v_row_base := v_row_base + v_base[v_i][v_j];
+      END LOOP;
+      v_row_remaining[v_i] := (v_participant_shares[v_i] - v_row_base)::INTEGER;
+    END LOOP;
+
+    FOR v_j IN 1..v_payer_count LOOP
+      v_column_base := 0;
+      FOR v_i IN 1..v_participant_count LOOP
+        v_column_base := v_column_base + v_base[v_i][v_j];
+      END LOOP;
+      v_column_remaining[v_j] := (v_payer_amounts[v_j] - v_column_base)::INTEGER;
+    END LOOP;
+
+    -- Find a deterministic augmenting path for each residual paise. This
+    -- controlled rounding preserves both participant-share and payer totals.
+    FOR v_start_row IN 1..v_participant_count LOOP
+      WHILE v_row_remaining[v_start_row] > 0 LOOP
+        v_parent := pg_catalog.array_fill(0, ARRAY[v_node_count]);
+        v_queue := ARRAY[v_start_row];
+        v_parent[v_start_row] := -1;
+        v_head := 1;
+        v_endpoint := 0;
+
+        WHILE v_head <= pg_catalog.cardinality(v_queue) AND v_endpoint = 0 LOOP
+          v_node := v_queue[v_head];
+          v_head := v_head + 1;
+
+          IF v_node <= v_participant_count THEN
+            FOR v_candidate IN
+              SELECT candidate.idx
+              FROM pg_catalog.generate_series(1, v_payer_count) AS candidate(idx)
+              ORDER BY v_remainders[v_node][candidate.idx] DESC, v_payer_ids[candidate.idx]
+            LOOP
+              v_column_node := v_participant_count + v_candidate;
+              IF v_remainders[v_node][v_candidate] > 0
+                AND NOT v_selected[v_node][v_candidate]
+                AND v_parent[v_column_node] = 0 THEN
+                v_parent[v_column_node] := v_node;
+                v_queue := pg_catalog.array_append(v_queue, v_column_node);
+                IF v_column_remaining[v_candidate] > 0 THEN
+                  v_endpoint := v_column_node;
+                  EXIT;
+                END IF;
+              END IF;
+            END LOOP;
+          ELSE
+            v_j := v_node - v_participant_count;
+            FOR v_candidate IN 1..v_participant_count LOOP
+              IF v_selected[v_candidate][v_j] AND v_parent[v_candidate] = 0 THEN
+                v_parent[v_candidate] := v_node;
+                v_queue := pg_catalog.array_append(v_queue, v_candidate);
+              END IF;
+            END LOOP;
+          END IF;
+        END LOOP;
+
+        IF v_endpoint = 0 THEN
+          RAISE EXCEPTION 'Could not reconcile integer-paise allocation for expense %', v_expense.id
+            USING ERRCODE = '23514';
+        END IF;
+
+        v_column_node := v_endpoint;
+        LOOP
+          v_row_node := v_parent[v_column_node];
+          v_j := v_column_node - v_participant_count;
+          v_selected[v_row_node][v_j] := TRUE;
+          IF v_row_node = v_start_row THEN
+            EXIT;
+          END IF;
+          v_previous_column_node := v_parent[v_row_node];
+          v_selected[v_row_node][v_previous_column_node - v_participant_count] := FALSE;
+          v_column_node := v_previous_column_node;
+        END LOOP;
+
+        v_row_remaining[v_start_row] := v_row_remaining[v_start_row] - 1;
+        v_column_remaining[v_endpoint - v_participant_count]
+          := v_column_remaining[v_endpoint - v_participant_count] - 1;
+      END LOOP;
+    END LOOP;
+
+    FOR v_j IN 1..v_payer_count LOOP
+      IF v_column_remaining[v_j] <> 0 THEN
+        RAISE EXCEPTION 'Could not reconcile payer totals for expense %', v_expense.id
+          USING ERRCODE = '23514';
+      END IF;
+    END LOOP;
+
+    FOR v_i IN 1..v_participant_count LOOP
+      FOR v_j IN 1..v_payer_count LOOP
+        expense_id := v_expense.id;
+        group_id := v_expense.group_id;
+        payer_id := v_payer_ids[v_j];
+        participant_id := v_participant_ids[v_i];
+        amount_paise := v_base[v_i][v_j] + CASE WHEN v_selected[v_i][v_j] THEN 1 ELSE 0 END;
+        RETURN NEXT;
+      END LOOP;
+    END LOOP;
+  END LOOP;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.expense_pair_allocations(UUID, UUID) FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.get_friend_balances()
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+  WITH caller AS (SELECT auth.uid() AS uid),
+  allocations AS MATERIALIZED (
+    SELECT allocation.*
+    FROM public.expense_pair_allocations((SELECT uid FROM caller), NULL::UUID) AS allocation
+  ),
+  flows AS (
+    SELECT
+      allocation.participant_id AS other_user,
+      allocation.amount_paise AS net
+    FROM allocations AS allocation
+    WHERE allocation.payer_id = (SELECT uid FROM caller)
+      AND allocation.participant_id <> (SELECT uid FROM caller)
+
+    UNION ALL
+
+    SELECT
+      allocation.payer_id AS other_user,
+      -allocation.amount_paise AS net
+    FROM allocations AS allocation
+    WHERE allocation.participant_id = (SELECT uid FROM caller)
+      AND allocation.payer_id <> (SELECT uid FROM caller)
+
+    UNION ALL
+
+    SELECT settlement.recipient_id, settlement.amount_paise
+    FROM public.settlements AS settlement
+    WHERE settlement.payer_id = (SELECT uid FROM caller)
+      AND settlement.status = 'confirmed'
+
+    UNION ALL
+
+    SELECT settlement.payer_id, -settlement.amount_paise
+    FROM public.settlements AS settlement
+    WHERE settlement.recipient_id = (SELECT uid FROM caller)
+      AND settlement.status = 'confirmed'
+  ),
+  aggregated AS (
+    SELECT flow.other_user, pg_catalog.sum(flow.net)::BIGINT AS balance
+    FROM flows AS flow
+    WHERE flow.other_user IS NOT NULL
+    GROUP BY flow.other_user
+    HAVING pg_catalog.sum(flow.net) <> 0
+  )
+  SELECT
+    aggregate.other_user,
+    aggregate.balance,
+    CASE WHEN aggregate.balance > 0 THEN aggregate.balance ELSE 0 END::BIGINT,
+    CASE WHEN aggregate.balance < 0 THEN -aggregate.balance ELSE 0 END::BIGINT
+  FROM aggregated AS aggregate;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_group_balances(p_group_id UUID)
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $function$
+  WITH caller AS (
+    SELECT auth.uid() AS uid
+    WHERE auth.uid() IS NOT NULL
+      AND public.is_group_member(auth.uid(), p_group_id)
+  ),
+  allocations AS MATERIALIZED (
+    SELECT allocation.*
+    FROM public.expense_pair_allocations((SELECT uid FROM caller), p_group_id) AS allocation
+  ),
+  flows AS (
+    SELECT
+      allocation.participant_id AS other_user,
+      allocation.amount_paise AS net
+    FROM allocations AS allocation
+    WHERE allocation.group_id = p_group_id
+      AND allocation.payer_id = (SELECT uid FROM caller)
+      AND allocation.participant_id <> (SELECT uid FROM caller)
+
+    UNION ALL
+
+    SELECT
+      allocation.payer_id AS other_user,
+      -allocation.amount_paise AS net
+    FROM allocations AS allocation
+    WHERE allocation.group_id = p_group_id
+      AND allocation.participant_id = (SELECT uid FROM caller)
+      AND allocation.payer_id <> (SELECT uid FROM caller)
+
+    UNION ALL
+
+    SELECT settlement.recipient_id, settlement.amount_paise
+    FROM public.settlements AS settlement
+    WHERE settlement.payer_id = (SELECT uid FROM caller)
+      AND settlement.status = 'confirmed'
+      AND settlement.group_id = p_group_id
+
+    UNION ALL
+
+    SELECT settlement.payer_id, -settlement.amount_paise
+    FROM public.settlements AS settlement
+    WHERE settlement.recipient_id = (SELECT uid FROM caller)
+      AND settlement.status = 'confirmed'
+      AND settlement.group_id = p_group_id
+  ),
+  aggregated AS (
+    SELECT flow.other_user, pg_catalog.sum(flow.net)::BIGINT AS balance
+    FROM flows AS flow
+    WHERE flow.other_user IS NOT NULL
+    GROUP BY flow.other_user
+    HAVING pg_catalog.sum(flow.net) <> 0
+  )
+  SELECT
+    aggregate.other_user,
+    aggregate.balance,
+    CASE WHEN aggregate.balance > 0 THEN aggregate.balance ELSE 0 END::BIGINT,
+    CASE WHEN aggregate.balance < 0 THEN -aggregate.balance ELSE 0 END::BIGINT
+  FROM aggregated AS aggregate;
+$function$;
+
+-- Internal helper/access RPCs are not directly exposed to anonymous callers.
+-- Invitation preview is deliberately public and returns only approved fields.
+-- Bind relationship/access helper IDs to the caller so the interval before
+-- migration 014 cannot be used as an arbitrary-ID relationship probe.
+CREATE OR REPLACE FUNCTION public.are_friends(user_a UUID, user_b UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND user_a = auth.uid()
+    AND EXISTS (
+      SELECT 1
+      FROM public.friend_requests AS request
+      WHERE request.status = 'accepted'
+        AND LEAST(request.sender_id, request.receiver_id) = LEAST(user_a, user_b)
+        AND GREATEST(request.sender_id, request.receiver_id) = GREATEST(user_a, user_b)
+    );
+$function$;
+
+CREATE OR REPLACE FUNCTION public.is_group_member(p_user_id UUID, p_group_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND p_user_id = auth.uid()
+    AND EXISTS (
+      SELECT 1
+      FROM public.group_members AS member
+      WHERE member.user_id = p_user_id
+        AND member.group_id = p_group_id
+        AND member.removed_at IS NULL
+    );
+$function$;
+
+CREATE OR REPLACE FUNCTION public.is_group_admin(p_user_id UUID, p_group_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND p_user_id = auth.uid()
+    AND EXISTS (
+      SELECT 1
+      FROM public.group_members AS member
+      WHERE member.user_id = p_user_id
+        AND member.group_id = p_group_id
+        AND member.role = 'admin'
+        AND member.removed_at IS NULL
+    );
+$function$;
+
+CREATE OR REPLACE FUNCTION public.can_access_expense(p_user_id UUID, p_expense_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND p_user_id = auth.uid()
+    AND EXISTS (
+      SELECT 1
+      FROM public.expenses AS expense
+      WHERE expense.id = p_expense_id
+        AND expense.status <> 'deleted'
+        AND (
+          expense.creator_id = p_user_id
+          OR EXISTS (
+            SELECT 1
+            FROM public.expense_payers AS payer
+            WHERE payer.expense_id = expense.id
+              AND payer.user_id = p_user_id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM public.expense_shares AS share
+            WHERE share.expense_id = expense.id
+              AND share.user_id = p_user_id
+          )
+          OR (
+            expense.group_id IS NOT NULL
+            AND public.is_group_member(p_user_id, expense.group_id)
+          )
+        )
+    );
+$function$;
+
+REVOKE ALL ON FUNCTION public.are_friends(UUID, UUID) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.is_group_member(UUID, UUID) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.is_group_admin(UUID, UUID) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.can_access_expense(UUID, UUID) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.accept_invitation(TEXT) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_friend_balances() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_group_balances(UUID) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_settlement_recipient_upis() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.delete_account() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.respond_to_settlement(UUID, TEXT) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.cancel_settlement(UUID) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.handle_new_user() FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION public.are_friends(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_group_member(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_group_admin(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.can_access_expense(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.accept_invitation(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_friend_balances() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_group_balances(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_settlement_recipient_upis() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_account() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.respond_to_settlement(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.cancel_settlement(UUID) TO authenticated;
+
+ALTER FUNCTION public.are_friends(UUID, UUID) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.is_group_member(UUID, UUID) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.is_group_admin(UUID, UUID) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.can_access_expense(UUID, UUID) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.handle_new_user() SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.accept_invitation(TEXT) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.get_invitation_preview(TEXT) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.delete_account() SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.respond_to_settlement(UUID, TEXT) SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION public.cancel_settlement(UUID) SET search_path = pg_catalog, public, pg_temp;
+
+-- ==========================================
+-- MIGRATION: 014_active_account_enforcement.sql
+-- ==========================================
+-- Enforce profile activity at the database boundary after reconciliation 013.
+-- The function returns no profile data and derives identity only from auth.uid().
+CREATE OR REPLACE FUNCTION public.is_active_account()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM public.profiles AS profile
+      WHERE profile.id = auth.uid()
+        AND profile.deleted_at IS NULL
+    );
+$function$;
+
+REVOKE ALL ON FUNCTION public.is_active_account() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.is_active_account() TO authenticated;
+
+-- Relationship helpers are callable from RLS, so keep authenticated execution
+-- but bind every lookup to the caller instead of accepting arbitrary user IDs.
+CREATE OR REPLACE FUNCTION public.are_friends(user_a UUID, user_b UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND user_a = auth.uid()
+    AND public.is_active_account()
+    AND EXISTS (
+      SELECT 1
+      FROM public.friend_requests AS request
+      WHERE request.status = 'accepted'
+        AND LEAST(request.sender_id, request.receiver_id) = LEAST(user_a, user_b)
+        AND GREATEST(request.sender_id, request.receiver_id) = GREATEST(user_a, user_b)
+    );
+$function$;
+
+CREATE OR REPLACE FUNCTION public.is_group_member(p_user_id UUID, p_group_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND p_user_id = auth.uid()
+    AND public.is_active_account()
+    AND EXISTS (
+      SELECT 1
+      FROM public.group_members AS member
+      WHERE member.user_id = p_user_id
+        AND member.group_id = p_group_id
+        AND member.removed_at IS NULL
+    );
+$function$;
+
+CREATE OR REPLACE FUNCTION public.is_group_admin(p_user_id UUID, p_group_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND p_user_id = auth.uid()
+    AND public.is_active_account()
+    AND EXISTS (
+      SELECT 1
+      FROM public.group_members AS member
+      WHERE member.user_id = p_user_id
+        AND member.group_id = p_group_id
+        AND member.role = 'admin'
+        AND member.removed_at IS NULL
+    );
+$function$;
+
+CREATE OR REPLACE FUNCTION public.can_access_expense(p_user_id UUID, p_expense_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+  SELECT auth.uid() IS NOT NULL
+    AND p_user_id = auth.uid()
+    AND public.is_active_account()
+    AND EXISTS (
+      SELECT 1
+      FROM public.expenses AS expense
+      WHERE expense.id = p_expense_id
+        AND expense.status <> 'deleted'
+        AND (
+          expense.creator_id = p_user_id
+          OR EXISTS (
+            SELECT 1
+            FROM public.expense_payers AS payer
+            WHERE payer.expense_id = expense.id
+              AND payer.user_id = p_user_id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM public.expense_shares AS share
+            WHERE share.expense_id = expense.id
+              AND share.user_id = p_user_id
+          )
+          OR (
+            expense.group_id IS NOT NULL
+            AND public.is_group_member(p_user_id, expense.group_id)
+          )
+        )
+    );
+$function$;
+
+REVOKE ALL ON FUNCTION public.are_friends(UUID, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.is_group_member(UUID, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.is_group_admin(UUID, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.can_access_expense(UUID, UUID) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.are_friends(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_group_member(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_group_admin(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.can_access_expense(UUID, UUID) TO authenticated;
+
+-- Guard security-definer RPC writes as well as direct writes. The trigger uses
+-- the request JWT identity; service-role jobs without auth.uid() remain usable.
+CREATE OR REPLACE FUNCTION public.enforce_active_account_write()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+BEGIN
+  IF auth.uid() IS NOT NULL AND NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.enforce_active_account_write() FROM PUBLIC, anon, authenticated;
+
+DO $migration$
+DECLARE
+  v_table_name TEXT;
+  v_tables TEXT[] := ARRAY[
+    'profiles',
+    'friend_requests',
+    'invitation_tokens',
+    'groups',
+    'group_members',
+    'expenses',
+    'expense_payers',
+    'expense_shares',
+    'expense_items',
+    'expense_item_allocations',
+    'expense_history',
+    'settlements',
+    'notifications',
+    'notification_preferences',
+    'push_subscriptions',
+    'idempotency_records',
+    'activity_log'
+  ];
+BEGIN
+  FOREACH v_table_name IN ARRAY v_tables LOOP
+    EXECUTE pg_catalog.format(
+      'CREATE POLICY active_account_required ON public.%I AS RESTRICTIVE FOR ALL TO authenticated USING (public.is_active_account()) WITH CHECK (public.is_active_account())',
+      v_table_name
+    );
+    EXECUTE pg_catalog.format(
+      'CREATE TRIGGER active_account_write_guard BEFORE INSERT OR UPDATE OR DELETE ON public.%I FOR EACH ROW EXECUTE FUNCTION public.enforce_active_account_write()',
+      v_table_name
+    );
+  END LOOP;
+END;
+$migration$;
+
+-- A security-definer mutation can otherwise bypass RLS. Run deletion cleanup
+-- while the caller is active, and tombstone the profile as the final update.
+CREATE OR REPLACE FUNCTION public.delete_account()
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+  v_profile_id UUID;
+BEGIN
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
+  END IF;
+  IF NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.group_members
+  SET removed_at = pg_catalog.now()
+  WHERE user_id = v_user_id
+    AND removed_at IS NULL;
+
+  UPDATE public.friend_requests
+  SET status = 'cancelled', updated_at = pg_catalog.now()
+  WHERE (sender_id = v_user_id OR receiver_id = v_user_id)
+    AND status = 'pending';
+
+  UPDATE public.invitation_tokens
+  SET revoked_at = pg_catalog.now()
+  WHERE creator_id = v_user_id
+    AND revoked_at IS NULL;
+
+  UPDATE public.settlements
+  SET status = 'cancelled', cancelled_at = pg_catalog.now()
+  WHERE payer_id = v_user_id
+    AND status IN ('proposed', 'pending');
+
+  UPDATE public.profiles
+  SET
+    deleted_at = pg_catalog.now(),
+    display_name = '[Deleted User]',
+    username = 'deleted_' || pg_catalog.substring(pg_catalog.replace(v_user_id::TEXT, '-', ''), 1, 22),
+    avatar_url = NULL,
+    bio = NULL,
+    upi_id = NULL,
+    updated_at = pg_catalog.now()
+  WHERE id = v_user_id
+    AND deleted_at IS NULL
+  RETURNING id INTO v_profile_id;
+
+  IF v_profile_id IS NULL THEN
+    RAISE EXCEPTION 'Account profile not found or already deactivated' USING ERRCODE = 'P0002';
+  END IF;
+
+  RETURN pg_catalog.json_build_object('success', TRUE);
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.delete_account() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.delete_account() TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.leave_group(p_group_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+BEGIN
+  IF v_user_id IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.group_members
+  SET removed_at = pg_catalog.now()
+  WHERE group_id = p_group_id
+    AND user_id = v_user_id
+    AND removed_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Active group membership not found' USING ERRCODE = 'P0002';
+  END IF;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.leave_group(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.leave_group(UUID) TO authenticated;
+
+ALTER FUNCTION public.accept_invitation(TEXT) RENAME TO accept_invitation_internal;
+REVOKE ALL ON FUNCTION public.accept_invitation_internal(TEXT) FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.accept_invitation(p_token TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+BEGIN
+  IF auth.uid() IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+  RETURN public.accept_invitation_internal(p_token);
+END;
+$function$;
+REVOKE ALL ON FUNCTION public.accept_invitation(TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.accept_invitation(TEXT) TO authenticated;
+
+ALTER FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) RENAME TO propose_settlement_internal;
+REVOKE ALL ON FUNCTION public.propose_settlement_internal(UUID, BIGINT, TEXT) FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.propose_settlement(
+  p_recipient_id UUID,
+  p_amount_paise BIGINT,
+  p_idempotency_key TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+BEGIN
+  IF auth.uid() IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+  RETURN public.propose_settlement_internal(p_recipient_id, p_amount_paise, p_idempotency_key);
+END;
+$function$;
+REVOKE ALL ON FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.propose_settlement(UUID, BIGINT, TEXT) TO authenticated;
+
+ALTER FUNCTION public.respond_to_settlement(UUID, TEXT) RENAME TO respond_to_settlement_internal;
+REVOKE ALL ON FUNCTION public.respond_to_settlement_internal(UUID, TEXT) FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.respond_to_settlement(p_settlement_id UUID, p_action TEXT)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+BEGIN
+  IF auth.uid() IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+  RETURN public.respond_to_settlement_internal(p_settlement_id, p_action);
+END;
+$function$;
+REVOKE ALL ON FUNCTION public.respond_to_settlement(UUID, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.respond_to_settlement(UUID, TEXT) TO authenticated;
+
+ALTER FUNCTION public.cancel_settlement(UUID) RENAME TO cancel_settlement_internal;
+REVOKE ALL ON FUNCTION public.cancel_settlement_internal(UUID) FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.cancel_settlement(p_settlement_id UUID)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+BEGIN
+  IF auth.uid() IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active account required' USING ERRCODE = '42501';
+  END IF;
+  RETURN public.cancel_settlement_internal(p_settlement_id);
+END;
+$function$;
+REVOKE ALL ON FUNCTION public.cancel_settlement(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.cancel_settlement(UUID) TO authenticated;
+
+-- Keep existing callable RPC names, but prevent inactive callers from using
+-- SECURITY DEFINER reads to retrieve private profiles or financial balances.
+ALTER FUNCTION public.get_profile_for_user(UUID) RENAME TO get_profile_for_user_internal;
+REVOKE ALL ON FUNCTION public.get_profile_for_user_internal(UUID) FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.get_profile_for_user(p_user_id UUID)
+RETURNS TABLE (
+  id UUID,
+  username TEXT,
+  display_name TEXT,
+  avatar_url TEXT,
+  bio TEXT,
+  upi_id TEXT,
+  created_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ,
+  deleted_at TIMESTAMPTZ
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT
+    profile.id,
+    profile.username,
+    profile.display_name,
+    profile.avatar_url,
+    profile.bio,
+    profile.upi_id,
+    profile.created_at,
+    profile.updated_at,
+    profile.deleted_at
+  FROM public.get_profile_for_user_internal(p_user_id) AS profile
+  WHERE public.is_active_account();
+$function$;
+REVOKE ALL ON FUNCTION public.get_profile_for_user(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_profile_for_user(UUID) TO authenticated;
+
+ALTER FUNCTION public.get_settlement_recipient_upis() RENAME TO get_settlement_recipient_upis_internal;
+REVOKE ALL ON FUNCTION public.get_settlement_recipient_upis_internal() FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.get_settlement_recipient_upis()
+RETURNS TABLE (settlement_id UUID, upi_id TEXT)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT result.settlement_id, result.upi_id
+  FROM public.get_settlement_recipient_upis_internal() AS result
+  WHERE public.is_active_account();
+$function$;
+REVOKE ALL ON FUNCTION public.get_settlement_recipient_upis() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_settlement_recipient_upis() TO authenticated;
+
+ALTER FUNCTION public.get_friend_balances() RENAME TO get_friend_balances_internal;
+REVOKE ALL ON FUNCTION public.get_friend_balances_internal() FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.get_friend_balances()
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT result.other_user_id, result.net_paise, result.owed_to_paise, result.owing_paise
+  FROM public.get_friend_balances_internal() AS result
+  WHERE public.is_active_account();
+$function$;
+REVOKE ALL ON FUNCTION public.get_friend_balances() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_friend_balances() TO authenticated;
+
+ALTER FUNCTION public.get_group_balances(UUID) RENAME TO get_group_balances_internal;
+REVOKE ALL ON FUNCTION public.get_group_balances_internal(UUID) FROM PUBLIC, anon, authenticated;
+CREATE FUNCTION public.get_group_balances(p_group_id UUID)
+RETURNS TABLE (
+  other_user_id UUID,
+  net_paise BIGINT,
+  owed_to_paise BIGINT,
+  owing_paise BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+AS $function$
+  SELECT result.other_user_id, result.net_paise, result.owed_to_paise, result.owing_paise
+  FROM public.get_group_balances_internal(p_group_id) AS result
+  WHERE public.is_active_account();
+$function$;
+REVOKE ALL ON FUNCTION public.get_group_balances(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_group_balances(UUID) TO authenticated;
+
+NOTIFY pgrst, 'reload schema';
+
+-- ==========================================
+-- MIGRATION: 015_relationship_authorization.sql
+-- ==========================================
+-- Prevent direct friend-request writes from manufacturing accepted friendships
+-- or changing the users attached to an existing request.
+DROP POLICY IF EXISTS "friend_requests_insert" ON public.friend_requests;
+CREATE POLICY "friend_requests_insert"
+  ON public.friend_requests FOR INSERT
+  WITH CHECK (
+    auth.uid() IS NOT NULL
+    AND sender_id = auth.uid()
+    AND sender_id <> receiver_id
+    AND status = 'pending'
+  );
+
+REVOKE UPDATE ON TABLE public.friend_requests FROM PUBLIC, anon, authenticated;
+GRANT UPDATE (status) ON TABLE public.friend_requests TO authenticated;
+
+-- Group invitations are a privileged way to create memberships. Only an
+-- active group admin may create one; token identity and redemption limits
+-- cannot be rewritten by the token owner.
+CREATE OR REPLACE FUNCTION public.enforce_invitation_token_integrity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(
+      NEW.id, NEW.token, NEW.type, NEW.creator_id, NEW.target_id,
+      NEW.max_uses, NEW.expires_at, NEW.created_at
+    ) IS DISTINCT FROM ROW(
+      OLD.id, OLD.token, OLD.type, OLD.creator_id, OLD.target_id,
+      OLD.max_uses, OLD.expires_at, OLD.created_at
+    ) THEN
+      RAISE EXCEPTION 'Invitation identity and redemption limits cannot be changed'
+        USING ERRCODE = '42501';
+    END IF;
+
+    IF NEW.use_count < OLD.use_count THEN
+      RAISE EXCEPTION 'Invitation use count cannot be decreased'
+        USING ERRCODE = '42501';
+    END IF;
+
+    IF NEW.use_count > OLD.use_count
+      AND OLD.type = 'group'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.group_members AS member
+        WHERE member.group_id = OLD.target_id
+          AND member.user_id = OLD.creator_id
+          AND member.role = 'admin'
+          AND member.removed_at IS NULL
+      )
+    THEN
+      RAISE EXCEPTION 'Group invitation creator must remain an active group admin'
+        USING ERRCODE = '42501';
+    END IF;
+
+    RETURN NEW;
+  END IF;
+
+  IF auth.uid() IS NOT NULL AND NEW.creator_id <> auth.uid() THEN
+    RAISE EXCEPTION 'Invitation creator must be the authenticated user'
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF NEW.type = 'friend' AND NEW.target_id IS NOT NULL THEN
+    RAISE EXCEPTION 'Friend invitations cannot target a group'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF NEW.type = 'group' AND (
+    NEW.target_id IS NULL
+    OR NOT EXISTS (
+      SELECT 1
+      FROM public.group_members AS member
+      WHERE member.group_id = NEW.target_id
+        AND member.user_id = NEW.creator_id
+        AND member.role = 'admin'
+        AND member.removed_at IS NULL
+    )
+  ) THEN
+    RAISE EXCEPTION 'Group invitations require an active group admin'
+      USING ERRCODE = '42501';
+  END IF;
+
+  RETURN NEW;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.enforce_invitation_token_integrity() FROM PUBLIC, anon, authenticated;
+
+CREATE TRIGGER invitation_token_integrity
+  BEFORE INSERT OR UPDATE ON public.invitation_tokens
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_invitation_token_integrity();
+
+REVOKE UPDATE ON TABLE public.invitation_tokens FROM PUBLIC, anon, authenticated;
+GRANT UPDATE (revoked_at) ON TABLE public.invitation_tokens TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 016_atomic_expense_creation.sql
+-- ==========================================
+-- Create or reconcile an expense and its payer/share ledger in one transaction.
+-- A retry with the same key repairs missing rows, but never overwrites conflicting
+-- records or treats the expense header alone as proof of completion.
+CREATE OR REPLACE FUNCTION public.create_expense_with_records(
+  p_expense JSONB,
+  p_payers JSONB,
+  p_shares JSONB
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+  v_creator_id UUID;
+  v_idempotency_key TEXT;
+  v_title TEXT;
+  v_amount_paise BIGINT;
+  v_currency TEXT;
+  v_split_method public.split_method;
+  v_group_id UUID;
+  v_expense_date DATE;
+  v_category TEXT;
+  v_notes TEXT;
+  v_expense public.expenses%ROWTYPE;
+  v_expense_id UUID;
+  v_payer_count BIGINT;
+  v_payer_user_count BIGINT;
+  v_payer_distinct_user_count BIGINT;
+  v_payer_amount_count BIGINT;
+  v_payer_total NUMERIC;
+  v_share_count BIGINT;
+  v_share_user_count BIGINT;
+  v_share_distinct_user_count BIGINT;
+  v_share_amount_count BIGINT;
+  v_share_total NUMERIC;
+  v_persisted_payer_count BIGINT;
+  v_persisted_payer_total NUMERIC;
+  v_persisted_share_count BIGINT;
+  v_persisted_share_total NUMERIC;
+  v_restore_voided BOOLEAN := FALSE;
+BEGIN
+  IF v_user_id IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active authenticated account required' USING ERRCODE = '42501';
+  END IF;
+  IF pg_catalog.jsonb_typeof(p_expense) IS DISTINCT FROM 'object'
+    OR pg_catalog.jsonb_typeof(p_payers) IS DISTINCT FROM 'array'
+    OR pg_catalog.jsonb_typeof(p_shares) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'Expense, payer, and share payloads have invalid shapes' USING ERRCODE = '22023';
+  END IF;
+
+  v_creator_id := (p_expense->>'creator_id')::UUID;
+  v_idempotency_key := pg_catalog.btrim(p_expense->>'idempotency_key');
+  v_title := pg_catalog.btrim(p_expense->>'title');
+  v_amount_paise := (p_expense->>'amount_paise')::BIGINT;
+  v_currency := p_expense->>'currency';
+  v_split_method := (p_expense->>'split_method')::public.split_method;
+  v_group_id := NULLIF(p_expense->>'group_id', '')::UUID;
+  v_expense_date := (p_expense->>'expense_date')::DATE;
+  v_category := NULLIF(p_expense->>'category', 'null');
+  v_notes := NULLIF(p_expense->>'notes', 'null');
+
+  IF v_creator_id IS NULL OR v_creator_id <> v_user_id THEN
+    RAISE EXCEPTION 'Expense creator must be the authenticated user' USING ERRCODE = '42501';
+  END IF;
+  IF v_idempotency_key IS NULL OR pg_catalog.char_length(v_idempotency_key) NOT BETWEEN 16 AND 128 THEN
+    RAISE EXCEPTION 'A valid expense idempotency key is required' USING ERRCODE = '22023';
+  END IF;
+  IF v_title IS NULL OR pg_catalog.char_length(v_title) NOT BETWEEN 1 AND 120
+    OR v_amount_paise IS NULL OR v_amount_paise <= 0
+    OR v_currency IS NULL OR v_currency !~ '^[A-Z]{3}$'
+    OR v_split_method IS NULL OR v_expense_date IS NULL THEN
+    RAISE EXCEPTION 'Expense details are invalid' USING ERRCODE = '22023';
+  END IF;
+  IF v_group_id IS NOT NULL AND NOT public.is_group_member(v_user_id, v_group_id) THEN
+    RAISE EXCEPTION 'Active group membership required to create this expense' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT
+    pg_catalog.count(*),
+    pg_catalog.count(payer."userId"),
+    pg_catalog.count(DISTINCT payer."userId"),
+    pg_catalog.count(payer."amountPaise"),
+    COALESCE(pg_catalog.sum(payer."amountPaise"), 0)
+  INTO v_payer_count, v_payer_user_count, v_payer_distinct_user_count, v_payer_amount_count, v_payer_total
+  FROM pg_catalog.jsonb_to_recordset(p_payers) AS payer("userId" UUID, "amountPaise" BIGINT);
+
+  SELECT
+    pg_catalog.count(*),
+    pg_catalog.count(share."userId"),
+    pg_catalog.count(DISTINCT share."userId"),
+    pg_catalog.count(share."amountPaise"),
+    COALESCE(pg_catalog.sum(share."amountPaise"), 0)
+  INTO v_share_count, v_share_user_count, v_share_distinct_user_count, v_share_amount_count, v_share_total
+  FROM pg_catalog.jsonb_to_recordset(p_shares) AS share("userId" UUID, "amountPaise" BIGINT);
+
+  IF v_payer_count = 0 OR v_payer_user_count <> v_payer_count
+    OR v_payer_distinct_user_count <> v_payer_count
+    OR v_payer_amount_count <> v_payer_count OR v_payer_total <> v_amount_paise
+    OR EXISTS (
+      SELECT 1
+      FROM pg_catalog.jsonb_to_recordset(p_payers) AS payer("amountPaise" BIGINT)
+      WHERE payer."amountPaise" <= 0
+    ) THEN
+    RAISE EXCEPTION 'Payer contributions must be unique, positive, and equal the expense total'
+      USING ERRCODE = '23514';
+  END IF;
+  IF v_share_count = 0 OR v_share_user_count <> v_share_count
+    OR v_share_distinct_user_count <> v_share_count
+    OR v_share_amount_count <> v_share_count OR v_share_total <> v_amount_paise
+    OR EXISTS (
+      SELECT 1
+      FROM pg_catalog.jsonb_to_recordset(p_shares) AS share("amountPaise" BIGINT)
+      WHERE share."amountPaise" < 0
+    ) THEN
+    RAISE EXCEPTION 'Participant shares must be unique, non-negative, and equal the expense total'
+      USING ERRCODE = '23514';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_idempotency_key, 0));
+
+  SELECT *
+  INTO v_expense
+  FROM public.expenses
+  WHERE idempotency_key = v_idempotency_key
+  FOR UPDATE;
+
+  IF FOUND THEN
+    IF v_expense.creator_id <> v_creator_id
+      OR v_expense.title IS DISTINCT FROM v_title
+      OR v_expense.amount_paise IS DISTINCT FROM v_amount_paise
+      OR v_expense.currency IS DISTINCT FROM v_currency
+      OR v_expense.split_method IS DISTINCT FROM v_split_method
+      OR v_expense.group_id IS DISTINCT FROM v_group_id
+      OR v_expense.expense_date IS DISTINCT FROM v_expense_date
+      OR v_expense.category IS DISTINCT FROM v_category
+      OR v_expense.notes IS DISTINCT FROM v_notes THEN
+      RAISE EXCEPTION 'Expense idempotency key was already used for different details'
+        USING ERRCODE = '22023';
+    END IF;
+    IF v_expense.status = 'voided' AND v_expense.void_reason = 'Payers/shares insert failed' THEN
+      v_restore_voided := TRUE;
+    ELSIF v_expense.status <> 'active' THEN
+      RAISE EXCEPTION 'Expense exists in a non-active state and requires manual reconciliation'
+        USING ERRCODE = '22023';
+    END IF;
+    v_expense_id := v_expense.id;
+  ELSE
+    INSERT INTO public.expenses (
+      title, amount_paise, currency, split_method, group_id, creator_id,
+      expense_date, category, notes, idempotency_key
+    )
+    VALUES (
+      v_title, v_amount_paise, v_currency, v_split_method, v_group_id, v_creator_id,
+      v_expense_date, v_category, v_notes, v_idempotency_key
+    )
+    RETURNING id INTO v_expense_id;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.expense_payers AS existing
+    LEFT JOIN pg_catalog.jsonb_to_recordset(p_payers)
+      AS expected("userId" UUID, "amountPaise" BIGINT)
+      ON expected."userId" = existing.user_id
+    WHERE existing.expense_id = v_expense_id
+      AND (expected."userId" IS NULL OR expected."amountPaise" IS DISTINCT FROM existing.amount_paise)
+  ) THEN
+    RAISE EXCEPTION 'Existing payer records conflict with the retry payload' USING ERRCODE = '23514';
+  END IF;
+  INSERT INTO public.expense_payers (expense_id, user_id, amount_paise)
+  SELECT v_expense_id, expected."userId", expected."amountPaise"
+  FROM pg_catalog.jsonb_to_recordset(p_payers) AS expected("userId" UUID, "amountPaise" BIGINT)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM public.expense_payers AS existing
+    WHERE existing.expense_id = v_expense_id
+      AND existing.user_id = expected."userId"
+  );
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.expense_shares AS existing
+    LEFT JOIN pg_catalog.jsonb_to_recordset(p_shares)
+      AS expected("userId" UUID, "amountPaise" BIGINT)
+      ON expected."userId" = existing.user_id
+    WHERE existing.expense_id = v_expense_id
+      AND (expected."userId" IS NULL OR expected."amountPaise" IS DISTINCT FROM existing.amount_paise)
+  ) THEN
+    RAISE EXCEPTION 'Existing participant-share records conflict with the retry payload'
+      USING ERRCODE = '23514';
+  END IF;
+  INSERT INTO public.expense_shares (expense_id, user_id, amount_paise, percentage, share_weight)
+  SELECT
+    v_expense_id,
+    expected."userId",
+    expected."amountPaise",
+    expected.percentage,
+    expected."shareWeight"
+  FROM pg_catalog.jsonb_to_recordset(p_shares)
+    AS expected("userId" UUID, "amountPaise" BIGINT, percentage NUMERIC, "shareWeight" NUMERIC)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM public.expense_shares AS existing
+    WHERE existing.expense_id = v_expense_id
+      AND existing.user_id = expected."userId"
+  );
+
+  SELECT pg_catalog.count(*), COALESCE(pg_catalog.sum(amount_paise), 0)
+  INTO v_persisted_payer_count, v_persisted_payer_total
+  FROM public.expense_payers
+  WHERE expense_id = v_expense_id;
+  SELECT pg_catalog.count(*), COALESCE(pg_catalog.sum(amount_paise), 0)
+  INTO v_persisted_share_count, v_persisted_share_total
+  FROM public.expense_shares
+  WHERE expense_id = v_expense_id;
+
+  IF v_persisted_payer_count <> v_payer_count
+    OR v_persisted_payer_total <> v_amount_paise
+    OR v_persisted_share_count <> v_share_count
+    OR v_persisted_share_total <> v_amount_paise THEN
+    RAISE EXCEPTION 'Persisted payer and participant records do not reconcile with the expense total'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF v_restore_voided THEN
+    UPDATE public.expenses
+    SET status = 'active', voided_at = NULL, voided_by = NULL, void_reason = NULL
+    WHERE id = v_expense_id;
+  END IF;
+
+  RETURN v_expense_id;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.create_expense_with_records(JSONB, JSONB, JSONB) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.create_expense_with_records(JSONB, JSONB, JSONB) TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 017_fix_expense_participant_visibility.sql
+-- ==========================================
+-- Qualify the outer expense id so participant access compares against the
+-- current expense row rather than the payer/share row's own id.
+DROP POLICY IF EXISTS "expenses_participant_select" ON public.expenses;
+
+CREATE POLICY "expenses_participant_select"
+  ON public.expenses FOR SELECT
+  USING (
+    status <> 'deleted'
+    AND (
+      creator_id = auth.uid()
+      OR EXISTS (
+        SELECT 1
+        FROM public.expense_payers AS payer
+        WHERE payer.expense_id = expenses.id
+          AND payer.user_id = auth.uid()
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM public.expense_shares AS share
+        WHERE share.expense_id = expenses.id
+          AND share.user_id = auth.uid()
+      )
+      OR (
+        group_id IS NOT NULL
+        AND public.is_group_member(auth.uid(), group_id)
+      )
+    )
+  );
+
+-- ==========================================
+-- MIGRATION: 018_atomic_itemized_expense_creation.sql
+-- ==========================================
+-- Persist itemized lines and allocations in the same transaction as the
+-- expense, payer contributions, and participant shares.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_items_expense_sort_order
+  ON public.expense_items (expense_id, sort_order);
+
+CREATE OR REPLACE FUNCTION public.create_itemized_expense_with_records(
+  p_expense JSONB,
+  p_payers JSONB,
+  p_shares JSONB,
+  p_items JSONB
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+DECLARE
+  v_expense_id UUID;
+  v_amount_paise BIGINT;
+  v_split_method public.split_method;
+  v_item_count BIGINT;
+  v_distinct_sort_count BIGINT;
+  v_named_item_count BIGINT;
+  v_item_total NUMERIC;
+  v_expected_allocation_count BIGINT;
+  v_persisted_item_count BIGINT;
+  v_persisted_allocation_count BIGINT;
+BEGIN
+  IF pg_catalog.jsonb_typeof(p_items) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'Itemized expense payload must be an array' USING ERRCODE = '22023';
+  END IF;
+
+  v_expense_id := public.create_expense_with_records(p_expense, p_payers, p_shares);
+  v_amount_paise := (p_expense->>'amount_paise')::BIGINT;
+  v_split_method := (p_expense->>'split_method')::public.split_method;
+
+  IF v_split_method <> 'itemized' THEN
+    RAISE EXCEPTION 'Itemized expense RPC requires the itemized split method' USING ERRCODE = '22023';
+  END IF;
+  IF pg_catalog.jsonb_array_length(p_items) = 0 THEN
+    RAISE EXCEPTION 'Itemized expenses require at least one item' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT
+    pg_catalog.count(*),
+    pg_catalog.count(DISTINCT item.sort_order),
+    pg_catalog.count(item.name),
+    COALESCE(pg_catalog.sum(item.total_paise), 0)
+  INTO v_item_count, v_distinct_sort_count, v_named_item_count, v_item_total
+  FROM pg_catalog.jsonb_to_recordset(p_items) AS item(
+    name TEXT,
+    quantity NUMERIC,
+    unit_price_paise BIGINT,
+    total_paise BIGINT,
+    sort_order INTEGER,
+    allocations JSONB
+  );
+
+  IF v_item_count <> v_distinct_sort_count
+    OR v_item_count <> v_named_item_count
+    OR v_item_total <> v_amount_paise THEN
+    RAISE EXCEPTION 'Item totals and ordering must reconcile with the expense'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.jsonb_to_recordset(p_items) AS item(
+      name TEXT,
+      quantity NUMERIC,
+      unit_price_paise BIGINT,
+      total_paise BIGINT,
+      sort_order INTEGER,
+      allocations JSONB
+    )
+    WHERE item.name IS NULL
+      OR pg_catalog.char_length(pg_catalog.btrim(item.name)) NOT BETWEEN 1 AND 100
+      OR item.quantity IS NULL
+      OR item.quantity <= 0
+      OR item.unit_price_paise IS NULL
+      OR item.unit_price_paise < 0
+      OR item.total_paise IS NULL
+      OR item.total_paise < 0
+      OR item.sort_order IS NULL
+      OR item.sort_order < 0
+      OR pg_catalog.round(item.unit_price_paise::NUMERIC * item.quantity) <> item.total_paise
+      OR pg_catalog.jsonb_typeof(item.allocations) IS DISTINCT FROM 'array'
+      OR (
+        SELECT pg_catalog.count(*)
+        FROM pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+          "userId" UUID,
+          "amountPaise" BIGINT
+        )
+      ) = 0
+      OR (
+        SELECT pg_catalog.count(*)
+        FROM pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+          "userId" UUID,
+          "amountPaise" BIGINT
+        )
+        WHERE allocation."userId" IS NULL
+          OR allocation."amountPaise" IS NULL
+          OR allocation."amountPaise" < 0
+      ) > 0
+      OR (
+        SELECT pg_catalog.count(*)
+        FROM pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+          "userId" UUID,
+          "amountPaise" BIGINT
+        )
+      ) <> (
+        SELECT pg_catalog.count(DISTINCT allocation."userId")
+        FROM pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+          "userId" UUID,
+          "amountPaise" BIGINT
+        )
+      )
+      OR COALESCE((
+        SELECT pg_catalog.sum(allocation."amountPaise")
+        FROM pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+          "userId" UUID,
+          "amountPaise" BIGINT
+        )
+      ), 0) <> item.total_paise
+  ) THEN
+    RAISE EXCEPTION 'Item details and participant allocations are invalid'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF EXISTS (
+    WITH item_allocations AS (
+      SELECT allocation."userId" AS user_id,
+        pg_catalog.sum(allocation."amountPaise") AS amount_paise
+      FROM pg_catalog.jsonb_to_recordset(p_items) AS item(allocations JSONB)
+      CROSS JOIN LATERAL pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+        "userId" UUID,
+        "amountPaise" BIGINT
+      )
+      GROUP BY allocation."userId"
+    ),
+    expected_shares AS (
+      SELECT share."userId" AS user_id,
+        pg_catalog.sum(share."amountPaise") AS amount_paise
+      FROM pg_catalog.jsonb_to_recordset(p_shares) AS share(
+        "userId" UUID,
+        "amountPaise" BIGINT
+      )
+      GROUP BY share."userId"
+    )
+    SELECT 1
+    FROM item_allocations
+    FULL OUTER JOIN expected_shares USING (user_id)
+    WHERE item_allocations.amount_paise IS DISTINCT FROM expected_shares.amount_paise
+  ) THEN
+    RAISE EXCEPTION 'Item allocations must match participant shares'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.expense_items AS existing
+    LEFT JOIN pg_catalog.jsonb_to_recordset(p_items) AS expected(
+      name TEXT,
+      quantity NUMERIC,
+      unit_price_paise BIGINT,
+      total_paise BIGINT,
+      sort_order INTEGER,
+      allocations JSONB
+    ) ON expected.sort_order = existing.sort_order
+    WHERE existing.expense_id = v_expense_id
+      AND (
+        expected.sort_order IS NULL
+        OR existing.name IS DISTINCT FROM pg_catalog.btrim(expected.name)
+        OR existing.quantity IS DISTINCT FROM expected.quantity
+        OR existing.unit_price_paise IS DISTINCT FROM expected.unit_price_paise
+        OR existing.total_paise IS DISTINCT FROM expected.total_paise
+      )
+  ) THEN
+    RAISE EXCEPTION 'Existing item records conflict with the retry payload'
+      USING ERRCODE = '23514';
+  END IF;
+
+  INSERT INTO public.expense_items (
+    expense_id, name, quantity, unit_price_paise, total_paise, sort_order
+  )
+  SELECT
+    v_expense_id,
+    pg_catalog.btrim(expected.name),
+    expected.quantity,
+    expected.unit_price_paise,
+    expected.total_paise,
+    expected.sort_order
+  FROM pg_catalog.jsonb_to_recordset(p_items) AS expected(
+    name TEXT,
+    quantity NUMERIC,
+    unit_price_paise BIGINT,
+    total_paise BIGINT,
+    sort_order INTEGER,
+    allocations JSONB
+  )
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM public.expense_items AS existing
+    WHERE existing.expense_id = v_expense_id
+      AND existing.sort_order = expected.sort_order
+  );
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.expense_item_allocations AS existing
+    JOIN public.expense_items AS item ON item.id = existing.item_id
+    LEFT JOIN pg_catalog.jsonb_to_recordset(p_items) AS expected_item(
+      sort_order INTEGER,
+      allocations JSONB
+    ) ON expected_item.sort_order = item.sort_order
+    LEFT JOIN LATERAL pg_catalog.jsonb_to_recordset(expected_item.allocations) AS expected_allocation(
+      "userId" UUID,
+      "amountPaise" BIGINT
+    ) ON expected_allocation."userId" = existing.user_id
+    WHERE item.expense_id = v_expense_id
+      AND (
+        expected_item.sort_order IS NULL
+        OR expected_allocation."userId" IS NULL
+        OR expected_allocation."amountPaise" IS DISTINCT FROM existing.amount_paise
+      )
+  ) THEN
+    RAISE EXCEPTION 'Existing item allocations conflict with the retry payload'
+      USING ERRCODE = '23514';
+  END IF;
+
+  INSERT INTO public.expense_item_allocations (item_id, user_id, amount_paise)
+  SELECT item.id, allocation."userId", allocation."amountPaise"
+  FROM public.expense_items AS item
+  JOIN pg_catalog.jsonb_to_recordset(p_items) AS expected_item(
+    sort_order INTEGER,
+    allocations JSONB
+  ) ON expected_item.sort_order = item.sort_order
+  CROSS JOIN LATERAL pg_catalog.jsonb_to_recordset(expected_item.allocations) AS allocation(
+    "userId" UUID,
+    "amountPaise" BIGINT
+  )
+  WHERE item.expense_id = v_expense_id
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.expense_item_allocations AS existing
+      WHERE existing.item_id = item.id
+        AND existing.user_id = allocation."userId"
+    );
+
+  SELECT COALESCE(pg_catalog.sum(expected.allocation_count), 0)
+  INTO v_expected_allocation_count
+  FROM (
+    SELECT pg_catalog.count(*) AS allocation_count
+    FROM pg_catalog.jsonb_to_recordset(p_items) AS item(allocations JSONB)
+    CROSS JOIN LATERAL pg_catalog.jsonb_to_recordset(item.allocations) AS allocation(
+      "userId" UUID,
+      "amountPaise" BIGINT
+    )
+  ) AS expected;
+
+  SELECT pg_catalog.count(*)
+  INTO v_persisted_item_count
+  FROM public.expense_items
+  WHERE expense_id = v_expense_id;
+
+  SELECT pg_catalog.count(*)
+  INTO v_persisted_allocation_count
+  FROM public.expense_item_allocations AS allocation
+  JOIN public.expense_items AS item ON item.id = allocation.item_id
+  WHERE item.expense_id = v_expense_id;
+
+  IF v_persisted_item_count <> v_item_count
+    OR v_persisted_allocation_count <> v_expected_allocation_count THEN
+    RAISE EXCEPTION 'Persisted item records do not match the retry payload'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN v_expense_id;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.create_itemized_expense_with_records(JSONB, JSONB, JSONB, JSONB)
+  FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.create_itemized_expense_with_records(JSONB, JSONB, JSONB, JSONB)
+  TO authenticated;
+
+-- ==========================================
+-- MIGRATION: 20261021223159_preserve_anonymized_ledger_identity.sql
+-- ==========================================
+-- Preserve pseudonymized profile identities when a user removes their Auth account.
+-- Financial and audit rows continue to reference public.profiles; deleting the
+-- corresponding auth.users row must not cascade into that retained ledger identity.
+DO $migration$
+DECLARE
+  v_fk RECORD;
+  v_fk_count INTEGER;
+  v_other_auth_fk_count INTEGER;
+BEGIN
+  SELECT pg_catalog.count(*)
+  INTO v_fk_count
+  FROM pg_catalog.pg_constraint AS constraint_row
+  WHERE constraint_row.conrelid = 'public.profiles'::pg_catalog.regclass
+    AND constraint_row.confrelid = 'auth.users'::pg_catalog.regclass
+    AND constraint_row.contype = 'f'
+    AND constraint_row.confdeltype = 'c';
+
+  IF v_fk_count <> 1 THEN
+    RAISE EXCEPTION 'Expected exactly one profiles-to-auth.users ON DELETE CASCADE foreign key; found %', v_fk_count;
+  END IF;
+
+  SELECT pg_catalog.count(*)
+  INTO v_other_auth_fk_count
+  FROM pg_catalog.pg_constraint AS constraint_row
+  WHERE constraint_row.connamespace = 'public'::pg_catalog.regnamespace
+    AND constraint_row.confrelid = 'auth.users'::pg_catalog.regclass
+    AND constraint_row.contype = 'f'
+    AND constraint_row.conrelid <> 'public.profiles'::pg_catalog.regclass;
+
+  IF v_other_auth_fk_count <> 0 THEN
+    RAISE EXCEPTION 'Unexpected public foreign keys reference auth.users; review before removing the profile link';
+  END IF;
+
+  SELECT constraint_row.conname
+  INTO v_fk
+  FROM pg_catalog.pg_constraint AS constraint_row
+  WHERE constraint_row.conrelid = 'public.profiles'::pg_catalog.regclass
+    AND constraint_row.confrelid = 'auth.users'::pg_catalog.regclass
+    AND constraint_row.contype = 'f'
+    AND constraint_row.confdeltype = 'c';
+
+  EXECUTE pg_catalog.format('ALTER TABLE public.profiles DROP CONSTRAINT %I', v_fk.conname);
+END;
+$migration$;
+
+COMMENT ON COLUMN public.profiles.id IS
+  'Stable ledger identity. Account closure anonymizes this row and may delete the matching auth.users identity while retaining financial attribution.';
+
+-- ==========================================
+-- MIGRATION: 20261021225434_revoke_excessive_app_table_privileges.sql
+-- ==========================================
+-- The production project currently grants anon and authenticated table-wide
+-- privileges, including TRUNCATE (which bypasses RLS), TRIGGER, REFERENCES,
+-- and PostgreSQL 17 MAINTAIN, on every application table. Keep authenticated
+-- row-level CRUD grants for the existing app policies, remove all direct
+-- anonymous table access, and prevent future postgres-owned app tables from
+-- inheriting these excessive grants. Do not touch Supabase-managed schemas.
+DO $migration$
+DECLARE
+  v_app_tables TEXT[] := ARRAY[
+    'profiles',
+    'friend_requests',
+    'invitation_tokens',
+    'groups',
+    'group_members',
+    'expenses',
+    'expense_payers',
+    'expense_shares',
+    'expense_items',
+    'expense_item_allocations',
+    'expense_history',
+    'settlements',
+    'notifications',
+    'notification_preferences',
+    'push_subscriptions',
+    'idempotency_records',
+    'activity_log'
+  ];
+  v_table_count INTEGER;
+  v_table_name TEXT;
+BEGIN
+  IF current_user <> 'postgres' THEN
+    RAISE EXCEPTION 'Expected the postgres role to own and reconcile application-table privileges';
+  END IF;
+
+  SELECT pg_catalog.count(*)
+  INTO v_table_count
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS schema ON schema.oid = relation.relnamespace
+  WHERE schema.nspname = 'public'
+    AND relation.relkind IN ('r', 'p')
+    AND relation.relname = ANY (v_app_tables);
+
+  IF v_table_count <> pg_catalog.cardinality(v_app_tables) THEN
+    RAISE EXCEPTION 'Expected all % application tables before privilege reconciliation; found %',
+      pg_catalog.cardinality(v_app_tables), v_table_count;
+  END IF;
+
+  FOREACH v_table_name IN ARRAY v_app_tables LOOP
+    EXECUTE pg_catalog.format(
+    'REVOKE ALL PRIVILEGES ON TABLE public.%I FROM PUBLIC, anon',
+      v_table_name
+    );
+    EXECUTE pg_catalog.format(
+      'REVOKE TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON TABLE public.%I FROM authenticated',
+      v_table_name
+    );
+  END LOOP;
+END;
+$migration$;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, anon;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+  REVOKE TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON TABLES FROM authenticated;
+
+-- ==========================================
+-- MIGRATION: 20261022143545_atomic_group_creation_and_expense_edit.sql
+-- ==========================================
+-- Keep group setup and expense edits atomic, caller-bound database operations.
+
+CREATE OR REPLACE FUNCTION public.create_group_with_owner(
+  p_name TEXT,
+  p_description TEXT,
+  p_type public.group_type
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+  v_group_id UUID;
+BEGIN
+  IF v_user_id IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active authenticated account required' USING ERRCODE = '42501';
+  END IF;
+  IF p_name IS NULL OR pg_catalog.char_length(pg_catalog.btrim(p_name)) NOT BETWEEN 1 AND 80
+    OR (p_description IS NOT NULL AND pg_catalog.char_length(p_description) > 200)
+    OR p_type IS NULL THEN
+    RAISE EXCEPTION 'Group details are invalid' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO public.groups (name, description, type, currency, creator_id)
+  VALUES (pg_catalog.btrim(p_name), NULLIF(pg_catalog.btrim(p_description), ''), p_type, 'INR', v_user_id)
+  RETURNING id INTO v_group_id;
+
+  INSERT INTO public.group_members (group_id, user_id, role)
+  VALUES (v_group_id, v_user_id, 'admin');
+
+  RETURN v_group_id;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.create_group_with_owner(TEXT, TEXT, public.group_type)
+  FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.create_group_with_owner(TEXT, TEXT, public.group_type)
+  TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.update_expense_with_records(
+  p_expense_id UUID,
+  p_expected_updated_at TIMESTAMPTZ,
+  p_title TEXT,
+  p_amount_paise BIGINT,
+  p_expense_date DATE,
+  p_notes TEXT,
+  p_category TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, auth, pg_temp
+SET row_security = off
+AS $function$
+DECLARE
+  v_user_id UUID := auth.uid();
+  v_expense public.expenses%ROWTYPE;
+  v_payer_count BIGINT;
+  v_payer_total NUMERIC;
+  v_share_count BIGINT;
+  v_share_total NUMERIC;
+  v_pair_key TEXT;
+BEGIN
+  IF v_user_id IS NULL OR NOT public.is_active_account() THEN
+    RAISE EXCEPTION 'Active authenticated account required' USING ERRCODE = '42501';
+  END IF;
+  IF p_expense_id IS NULL OR p_expected_updated_at IS NULL
+    OR p_title IS NULL OR pg_catalog.char_length(pg_catalog.btrim(p_title)) NOT BETWEEN 1 AND 120
+    OR p_amount_paise IS NULL OR p_amount_paise <= 0
+    OR p_expense_date IS NULL
+    OR (p_notes IS NOT NULL AND pg_catalog.char_length(p_notes) > 500)
+    OR (p_category IS NOT NULL AND pg_catalog.char_length(p_category) > 80) THEN
+    RAISE EXCEPTION 'Expense details are invalid' USING ERRCODE = '22023';
+  END IF;
+
+  -- Read the immutable participant set without taking the expense row lock.
+  -- Settlement RPCs acquire pair advisory locks before settlement row locks;
+  -- taking this row lock before those same pair locks would invert lock order.
+  SELECT * INTO v_expense
+  FROM public.expenses AS expense
+  WHERE expense.id = p_expense_id;
+
+  IF NOT FOUND OR v_expense.creator_id <> v_user_id OR v_expense.status <> 'active' THEN
+    RAISE EXCEPTION 'Active expense creator required' USING ERRCODE = '42501';
+  END IF;
+  IF v_expense.updated_at IS DISTINCT FROM p_expected_updated_at THEN
+    RAISE EXCEPTION 'Expense changed since it was opened; reload and retry'
+      USING ERRCODE = '40001';
+  END IF;
+  IF p_amount_paise <> v_expense.amount_paise AND v_expense.split_method <> 'equal' THEN
+    RAISE EXCEPTION 'Only equal-split amounts can be recalculated automatically'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF p_amount_paise <> v_expense.amount_paise AND EXISTS (
+    SELECT 1 FROM public.expense_items AS item WHERE item.expense_id = p_expense_id
+  ) THEN
+    RAISE EXCEPTION 'Itemized expense amounts must be edited with their line allocations'
+      USING ERRCODE = '22023';
+  END IF;
+
+  SELECT pg_catalog.count(*), COALESCE(pg_catalog.sum(payer.amount_paise), 0)
+  INTO v_payer_count, v_payer_total
+  FROM public.expense_payers AS payer
+  WHERE payer.expense_id = p_expense_id;
+  SELECT pg_catalog.count(*), COALESCE(pg_catalog.sum(share.amount_paise), 0)
+  INTO v_share_count, v_share_total
+  FROM public.expense_shares AS share
+  WHERE share.expense_id = p_expense_id;
+
+  IF v_payer_count = 0 OR v_share_count = 0
+    OR v_payer_total <> v_expense.amount_paise
+    OR v_share_total <> v_expense.amount_paise THEN
+    RAISE EXCEPTION 'Existing expense payer and share totals do not reconcile'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF p_amount_paise <> v_expense.amount_paise THEN
+    IF p_amount_paise < v_payer_count THEN
+      RAISE EXCEPTION 'Updated total is too small to retain every payer'
+        USING ERRCODE = '23514';
+    END IF;
+
+    -- Global lock order: pair advisory locks first, then the expense row.
+    -- Settlement RPCs likewise acquire their pair lock before locking a
+    -- settlement row. Sort pair keys so edits involving several pairs agree.
+    FOR v_pair_key IN
+      SELECT DISTINCT
+        LEAST(payer.user_id::TEXT, share.user_id::TEXT) || ':' ||
+        GREATEST(payer.user_id::TEXT, share.user_id::TEXT) AS pair_key
+      FROM public.expense_payers AS payer
+      CROSS JOIN public.expense_shares AS share
+      WHERE payer.expense_id = p_expense_id
+        AND share.expense_id = p_expense_id
+        AND payer.user_id <> share.user_id
+      ORDER BY pair_key
+    LOOP
+      PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_pair_key, 0));
+    END LOOP;
+  END IF;
+
+  -- Re-read and lock only after any required pair locks are held. A competing
+  -- edit may have completed while we waited; preserve optimistic stale-write
+  -- rejection and do not update from an obsolete header.
+  SELECT * INTO v_expense
+  FROM public.expenses AS expense
+  WHERE expense.id = p_expense_id
+  FOR UPDATE;
+
+  IF NOT FOUND OR v_expense.creator_id <> v_user_id OR v_expense.status <> 'active' THEN
+    RAISE EXCEPTION 'Active expense creator required' USING ERRCODE = '42501';
+  END IF;
+  IF v_expense.updated_at IS DISTINCT FROM p_expected_updated_at THEN
+    RAISE EXCEPTION 'Expense changed since it was opened; reload and retry'
+      USING ERRCODE = '40001';
+  END IF;
+  IF p_amount_paise <> v_expense.amount_paise AND v_expense.split_method <> 'equal' THEN
+    RAISE EXCEPTION 'Only equal-split amounts can be recalculated automatically' USING ERRCODE = '22023';
+  END IF;
+  IF p_amount_paise <> v_expense.amount_paise AND EXISTS (
+    SELECT 1 FROM public.expense_items AS item WHERE item.expense_id = p_expense_id
+  ) THEN
+    RAISE EXCEPTION 'Itemized expense amounts must be edited with their line allocations'
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF p_amount_paise <> v_expense.amount_paise THEN
+    WITH participants AS (
+      SELECT
+        share.id,
+        pg_catalog.row_number() OVER (ORDER BY share.user_id) AS position,
+        pg_catalog.count(*) OVER () AS participant_count
+      FROM public.expense_shares AS share
+      WHERE share.expense_id = p_expense_id
+    )
+    UPDATE public.expense_shares AS share
+    SET amount_paise = (p_amount_paise / participants.participant_count)
+      + CASE WHEN participants.position <= p_amount_paise % participants.participant_count THEN 1 ELSE 0 END,
+      percentage = NULL,
+      share_weight = NULL
+    FROM participants
+    WHERE share.id = participants.id;
+
+    WITH raw_amounts AS (
+      SELECT
+        payer.id,
+        payer.user_id,
+      payer.amount_paise::NUMERIC * (p_amount_paise - v_payer_count)::NUMERIC
+          / v_expense.amount_paise::NUMERIC AS exact_amount
+      FROM public.expense_payers AS payer
+      WHERE payer.expense_id = p_expense_id
+    ),
+    base_amounts AS (
+      SELECT
+        raw_amounts.id,
+        raw_amounts.user_id,
+        pg_catalog.floor(raw_amounts.exact_amount)::BIGINT AS base_amount,
+        raw_amounts.exact_amount - pg_catalog.floor(raw_amounts.exact_amount) AS remainder
+      FROM raw_amounts
+    ),
+    ranked_amounts AS (
+      SELECT
+        base_amounts.id,
+        base_amounts.base_amount,
+        pg_catalog.row_number() OVER (
+          ORDER BY base_amounts.remainder DESC, base_amounts.user_id
+        ) AS remainder_rank,
+        pg_catalog.sum(base_amounts.base_amount) OVER () AS base_total
+      FROM base_amounts
+    )
+    UPDATE public.expense_payers AS payer
+    SET amount_paise = 1 + ranked_amounts.base_amount
+      + CASE WHEN ranked_amounts.remainder_rank <= p_amount_paise - v_payer_count - ranked_amounts.base_total THEN 1 ELSE 0 END
+    FROM ranked_amounts
+    WHERE payer.id = ranked_amounts.id;
+  END IF;
+
+  UPDATE public.expenses AS expense
+  SET title = pg_catalog.btrim(p_title),
+      amount_paise = p_amount_paise,
+      expense_date = p_expense_date,
+      notes = NULLIF(pg_catalog.btrim(p_notes), ''),
+      category = NULLIF(pg_catalog.btrim(p_category), '')
+  WHERE expense.id = p_expense_id;
+
+  RETURN p_expense_id;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.update_expense_with_records(
+  UUID, TIMESTAMPTZ, TEXT, BIGINT, DATE, TEXT, TEXT
+) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.update_expense_with_records(
+  UUID, TIMESTAMPTZ, TEXT, BIGINT, DATE, TEXT, TEXT
+) TO authenticated;
