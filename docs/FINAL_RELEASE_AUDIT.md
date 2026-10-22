@@ -123,23 +123,38 @@
 
 - **Project:** `fall-split` (`prj_f291gmY6trCvcV1HkhBQihKa34Lg`)
 - **Team:** `team_1khzlugr2WTkxKiyzj6HjGIU`
+- **Active Production Deployment ID:** `dpl_BYmzejM4SrVYJcqfxbdHq7de5972`
+- **Active Production Commit SHA:** `134e5ba` (matching GitHub `main`)
+- **Deployment Status:** `READY` (built in 24s via `@vercel/vc-build`)
+- **Production Domains/Aliases:**
+  - `https://fall-split.vercel.app`
+  - `https://fall-split-immortal-pns-projects.vercel.app`
+  - `https://fall-split-git-main-immortal-pns-projects.vercel.app`
+- **Previous Rollback Candidate:** `dpl_GJYcXUij3CSX7JHrqLLigZZ5j4ni` (commit `7b5ba76`) preserved intact.
 - **Framework Preset:** Vite
 - **Node.js Runtime:** 24.x
 - **Configured Environment Variables (names only):**
   - `VITE_SUPABASE_URL` (Production, Preview)
   - `VITE_SUPABASE_ANON_KEY` (Production, Preview)
   - `VITE_APP_URL` (Production, Preview)
-- **Production HTTP Verification:**
+- **Production HTTP Verification & Live Smoke Test:**
   - `https://fall-split.vercel.app` → `200 OK`
-  - `Content-Security-Policy`: Verified active (`default-src 'self' ... connect-src 'self' https://*.supabase.co wss://*.supabase.co`).
-  - `X-Frame-Options`: `DENY`
-  - `X-Content-Type-Options`: `nosniff`
-  - `Referrer-Policy`: `strict-origin-when-cross-origin`
-  - `Permissions-Policy`: `camera=(self), microphone=(), geolocation=()`
-  - `Strict-Transport-Security`: `max-age=63072000; includeSubDomains; preload`
-  - Manifest (`/manifest.webmanifest`): `200 OK`, `application/manifest+json`
+  - Root unauthenticated redirect: `/login` (Title: Fall Split)
+  - Registration form (`/register`): `200 OK`, email input visible
+  - Login form (`/login`): `200 OK`, password & magic link email inputs visible
+  - Protected route guard (`/friends`, `/groups`, `/activity`, `/profile`, `/expenses/new`): Enforced redirect to `/login`
+  - Client-side legal routes (`/privacy`, `/terms`, `/support`): `200 OK`, headings rendered
+  - Manifest (`/manifest.webmanifest`): `200 OK`, `application/manifest+json`, name "Fall Split"
   - Service worker (`/sw.js`): `200 OK`, `application/javascript`
-  - Client-side rewrites (`/privacy`, `/terms`, `/support`): `200 OK`
+  - Browser console errors: 0
+  - Browser page errors: 0
+  - Security headers active:
+    - `Content-Security-Policy`: Verified active (`default-src 'self' ... connect-src 'self' https://*.supabase.co wss://*.supabase.co`)
+    - `X-Frame-Options`: `DENY`
+    - `X-Content-Type-Options`: `nosniff`
+    - `Referrer-Policy`: `strict-origin-when-cross-origin`
+    - `Permissions-Policy`: `camera=(self), microphone=(), geolocation=()`
+    - `Strict-Transport-Security`: `max-age=63072000; includeSubDomains; preload`
 
 ---
 
