@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
+import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
 import { format } from 'date-fns';
 
@@ -45,16 +46,18 @@ export function ActivityPage() {
   const { user } = useAuth();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'expenses' | 'settlements'>('all');
 
   const load = useCallback(async () => {
     if (!user) return;
     setLoading(true);
+    setError(null);
     try {
       const activityItems: ActivityItem[] = [];
 
       // Load expenses user is involved in
-      const [{ data: paidExpensesRaw }, { data: shareExpensesRaw }] = await Promise.all([
+      const [paidExpensesResult, shareExpensesResult] = await Promise.all([
         supabase
           .from('expense_payers')
           .select(
@@ -70,6 +73,15 @@ export function ActivityPage() {
           .eq('user_id', user.id)
           .order('expense_id'),
       ]);
+
+      if (paidExpensesResult.error || shareExpensesResult.error) {
+        setError('Activity could not be loaded. Please try again.');
+        setItems([]);
+        return;
+      }
+
+      const { data: paidExpensesRaw } = paidExpensesResult;
+      const { data: shareExpensesRaw } = shareExpensesResult;
 
       const paidExpenses = (paidExpensesRaw ?? []) as unknown as ExpenseJoinRow[];
       const shareExpenses = (shareExpensesRaw ?? []) as unknown as ExpenseJoinRow[];
@@ -96,11 +108,17 @@ export function ActivityPage() {
       }
 
       // Load settlements
-      const { data: settlementsRaw } = await supabase
+      const { data: settlementsRaw, error: settlementsError } = await supabase
         .from('settlements')
         .select('id, payer_id, recipient_id, amount_paise, status, created_at, notes')
         .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
         .in('status', ['confirmed', 'proposed', 'pending']);
+
+      if (settlementsError) {
+        setError('Activity could not be loaded. Please try again.');
+        setItems([]);
+        return;
+      }
 
       const settlements = (settlementsRaw ?? []) as unknown as SettlementRow[];
 
@@ -188,6 +206,8 @@ export function ActivityPage() {
           <div className="flex justify-center py-8">
             <Spinner size={24} />
           </div>
+        ) : error ? (
+          <ErrorMessage message={error} retry={() => void load()} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={Activity}

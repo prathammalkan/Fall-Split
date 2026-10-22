@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
+import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
 import { format } from 'date-fns';
 import type { Notification } from '../../types';
@@ -12,16 +13,24 @@ export function NotificationsPage() {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) return;
-    const { data } = await supabase
+    setLoading(true);
+    setError(null);
+    const { data, error: loadError } = await supabase
       .from('notifications')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(50);
-    setNotifications(data ?? []);
+    if (loadError) {
+      setError('Notifications could not be loaded. Please try again.');
+      setNotifications([]);
+    } else {
+      setNotifications(data ?? []);
+    }
     setLoading(false);
   }, [user]);
 
@@ -31,20 +40,28 @@ export function NotificationsPage() {
 
   const markAllRead = async () => {
     if (!user) return;
-    await db
+    const { error: updateError } = await db
       .from('notifications')
       .update({ read_at: new Date().toISOString() })
       .eq('user_id', user.id)
       .is('read_at', null);
+    if (updateError) {
+      setError('Notifications could not be updated. Please try again.');
+      return;
+    }
     void load();
   };
 
   const markRead = async (id: string) => {
-    await db
+    const { error: updateError } = await db
       .from('notifications')
       .update({ read_at: new Date().toISOString() })
       .eq('id', id)
       .is('read_at', null);
+    if (updateError) {
+      setError('Notification could not be updated. Please try again.');
+      return;
+    }
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n))
     );
@@ -70,6 +87,8 @@ export function NotificationsPage() {
           <div className="flex justify-center py-8">
             <Spinner size={24} />
           </div>
+        ) : error ? (
+          <ErrorMessage message={error} retry={() => void load()} />
         ) : notifications.length === 0 ? (
           <EmptyState icon={Bell} title="No notifications" description="You're all caught up" />
         ) : (
