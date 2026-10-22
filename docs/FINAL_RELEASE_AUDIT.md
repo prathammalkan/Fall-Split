@@ -123,14 +123,14 @@
 
 - **Project:** `fall-split` (`prj_f291gmY6trCvcV1HkhBQihKa34Lg`)
 - **Team:** `team_1khzlugr2WTkxKiyzj6HjGIU`
-- **Active Production Deployment ID:** `dpl_BYmzejM4SrVYJcqfxbdHq7de5972`
-- **Active Production Commit SHA:** `134e5ba` (matching GitHub `main`)
-- **Deployment Status:** `READY` (built in 24s via `@vercel/vc-build`)
+- **Active Production Deployment ID:** `dpl_8D2xG2p7KGdYbzJh1P8CfXMgfENr`
+- **Active Production Commit SHA:** `fe974d1` (matching GitHub `main`)
+- **Deployment Status:** `READY` (built in 36s via `@vercel/vc-build`)
 - **Production Domains/Aliases:**
   - `https://fall-split.vercel.app`
   - `https://fall-split-immortal-pns-projects.vercel.app`
   - `https://fall-split-git-main-immortal-pns-projects.vercel.app`
-- **Previous Rollback Candidate:** `dpl_GJYcXUij3CSX7JHrqLLigZZ5j4ni` (commit `7b5ba76`) preserved intact.
+- **Previous Rollback Candidates:** `dpl_BYmzejM4SrVYJcqfxbdHq7de5972` (commit `134e5ba`), `dpl_GJYcXUij3CSX7JHrqLLigZZ5j4ni` (commit `7b5ba76`) preserved intact.
 - **Framework Preset:** Vite
 - **Node.js Runtime:** 24.x
 - **Configured Environment Variables (names only):**
