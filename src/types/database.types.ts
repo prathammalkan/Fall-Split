@@ -356,7 +356,20 @@ export type Database = {
         Row: {
           id: string;
           user_id: string;
-          type: 'friend_request' | 'friend_accepted' | 'expense_added' | 'expense_updated' | 'expense_deleted' | 'settlement_proposed' | 'settlement_confirmed' | 'settlement_rejected' | 'group_invitation' | 'group_member_added' | 'group_member_removed' | 'debt_reminder' | 'balance_summary';
+          type:
+            | 'friend_request'
+            | 'friend_accepted'
+            | 'expense_added'
+            | 'expense_updated'
+            | 'expense_deleted'
+            | 'settlement_proposed'
+            | 'settlement_confirmed'
+            | 'settlement_rejected'
+            | 'group_invitation'
+            | 'group_member_added'
+            | 'group_member_removed'
+            | 'debt_reminder'
+            | 'balance_summary';
           title: string;
           body: string;
           data: Json | null;
@@ -366,7 +379,20 @@ export type Database = {
         Insert: {
           id?: string;
           user_id: string;
-          type: 'friend_request' | 'friend_accepted' | 'expense_added' | 'expense_updated' | 'expense_deleted' | 'settlement_proposed' | 'settlement_confirmed' | 'settlement_rejected' | 'group_invitation' | 'group_member_added' | 'group_member_removed' | 'debt_reminder' | 'balance_summary';
+          type:
+            | 'friend_request'
+            | 'friend_accepted'
+            | 'expense_added'
+            | 'expense_updated'
+            | 'expense_deleted'
+            | 'settlement_proposed'
+            | 'settlement_confirmed'
+            | 'settlement_rejected'
+            | 'group_invitation'
+            | 'group_member_added'
+            | 'group_member_removed'
+            | 'debt_reminder'
+            | 'balance_summary';
           title: string;
           body: string;
           data?: Json | null;
@@ -476,7 +502,17 @@ export type Database = {
         Update: Record<string, never>;
       };
     };
-    Views: Record<string, never>;
+    Views: {
+      discoverable_profiles: {
+        Row: {
+          id: string;
+          username: string;
+          display_name: string;
+          avatar_url: string | null;
+        };
+        Relationships: [];
+      };
+    };
     Functions: {
       are_friends: {
         Args: { user_a: string; user_b: string };
@@ -496,7 +532,13 @@ export type Database = {
       };
       accept_invitation: {
         Args: { p_token: string };
-        Returns: { success?: boolean; error?: string; type?: string; friendId?: string; groupId?: string };
+        Returns: {
+          success?: boolean;
+          error?: string;
+          type?: string;
+          friendId?: string;
+          groupId?: string;
+        };
       };
       get_invitation_preview: {
         Args: { p_token: string };
@@ -504,7 +546,46 @@ export type Database = {
       };
       get_friend_balances: {
         Args: Record<string, never>;
-        Returns: { other_user_id: string; net_paise: number; owed_to_paise: number; owing_paise: number }[];
+        Returns: {
+          other_user_id: string;
+          net_paise: number;
+          owed_to_paise: number;
+          owing_paise: number;
+        }[];
+      };
+      get_profile_for_user: {
+        Args: { p_user_id: string };
+        Returns: {
+          id: string;
+          username: string;
+          display_name: string;
+          avatar_url: string | null;
+          bio: string | null;
+          upi_id: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+        }[];
+      };
+      get_settlement_recipient_upis: {
+        Args: Record<string, never>;
+        Returns: { settlement_id: string; upi_id: string | null }[];
+      };
+      leave_group: {
+        Args: { p_group_id: string };
+        Returns: undefined;
+      };
+      delete_account: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      create_expense_with_records: {
+        Args: { p_expense: Json; p_payers: Json; p_shares: Json };
+        Returns: string;
+      };
+      create_itemized_expense_with_records: {
+        Args: { p_expense: Json; p_payers: Json; p_shares: Json; p_items: Json };
+        Returns: string;
       };
       propose_settlement: {
         Args: { p_recipient_id: string; p_amount_paise: number; p_idempotency_key: string };
@@ -526,14 +607,31 @@ export type Database = {
       member_role: 'admin' | 'member';
       split_method: 'equal' | 'unequal' | 'percentage' | 'shares' | 'itemized' | 'manual';
       expense_status: 'active' | 'voided' | 'deleted';
-      settlement_status: 'proposed' | 'pending' | 'confirmed' | 'rejected' | 'disputed' | 'cancelled';
-      notification_type: 'friend_request' | 'friend_accepted' | 'expense_added' | 'expense_updated' | 'expense_deleted' | 'settlement_proposed' | 'settlement_confirmed' | 'settlement_rejected' | 'group_invitation' | 'group_member_added' | 'group_member_removed' | 'debt_reminder' | 'balance_summary';
+      settlement_status:
+        'proposed' | 'pending' | 'confirmed' | 'rejected' | 'disputed' | 'cancelled';
+      notification_type:
+        | 'friend_request'
+        | 'friend_accepted'
+        | 'expense_added'
+        | 'expense_updated'
+        | 'expense_deleted'
+        | 'settlement_proposed'
+        | 'settlement_confirmed'
+        | 'settlement_rejected'
+        | 'group_invitation'
+        | 'group_member_added'
+        | 'group_member_removed'
+        | 'debt_reminder'
+        | 'balance_summary';
     };
     CompositeTypes: Record<string, never>;
   };
 };
 
-export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
-export type TablesInsert<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Insert'];
-export type TablesUpdate<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Update'];
+export type Tables<T extends keyof Database['public']['Tables']> =
+  Database['public']['Tables'][T]['Row'];
+export type TablesInsert<T extends keyof Database['public']['Tables']> =
+  Database['public']['Tables'][T]['Insert'];
+export type TablesUpdate<T extends keyof Database['public']['Tables']> =
+  Database['public']['Tables'][T]['Update'];
 export type Enums<T extends keyof Database['public']['Enums']> = Database['public']['Enums'][T];

@@ -46,7 +46,7 @@ export interface SettlementWithProfiles extends Settlement {
 // Financial domain types
 // All monetary values stored as paise (integer); 1 INR = 100 paise
 export interface Money {
-  paise: number;  // always integer
+  paise: number; // always integer
   currency: string;
 }
 
@@ -57,21 +57,21 @@ export interface Money {
 export interface Balance {
   userId: string;
   netPaise: number;
-  owedToPaise: number;    // sum of what others owe this user
-  owingPaise: number;     // sum of what this user owes others
+  owedToPaise: number; // sum of what others owe this user
+  owingPaise: number; // sum of what this user owes others
 }
 
 export interface PairBalance {
   userId: string;
   otherUserId: string;
-  netPaise: number;       // positive = other owes user, negative = user owes other
+  netPaise: number; // positive = other owes user, negative = user owes other
   groupId?: string | null;
 }
 
 export interface SimplifiedDebt {
   fromUserId: string;
   toUserId: string;
-  amountPaise: number;    // always positive
+  amountPaise: number; // always positive
   fromProfile?: Profile;
   toProfile?: Profile;
 }
@@ -132,7 +132,7 @@ export type SplitInput =
 
 export interface SplitResult {
   allocations: { userId: string; amountPaise: number }[];
-  reconciled: boolean;  // sum of allocations === totalPaise
+  reconciled: boolean; // sum of allocations === totalPaise
 }
 
 // Offline outbox types
@@ -140,17 +140,17 @@ export type OutboxOperationType = 'create_expense' | 'update_expense' | 'void_ex
 export type OutboxState = 'pending' | 'syncing' | 'synced' | 'failed' | 'conflict';
 
 export interface OutboxOperation {
-  id: string;                    // UUID, client-generated
-  idempotencyKey: string;        // Globally unique, prevents duplicate server-side
+  id: string; // UUID, client-generated
+  idempotencyKey: string; // Globally unique, prevents duplicate server-side
   type: OutboxOperationType;
-  schemaVersion: number;         // For future migrations of stored ops
-  payload: unknown;              // Typed per operation type
+  schemaVersion: number; // For future migrations of stored ops
+  payload: unknown; // Typed per operation type
   state: OutboxState;
-  createdAt: number;             // Unix ms
+  createdAt: number; // Unix ms
   updatedAt: number;
   retryCount: number;
   lastError?: string;
-  serverId?: string;             // Set after successful sync
+  serverId?: string; // Set after successful sync
   conflictInfo?: unknown;
 }
 

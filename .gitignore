@@ -8,16 +8,21 @@ dist/
 dist-ssr/
 *.local
 
-# Environment files — NEVER commit these
+# Environment files — keep only the safe placeholder template
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.production
+.env.*
+!.env.example
+
+# Local deployment config and certificates
+.vercel/
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Supabase local
 .supabase/
+supabase/.temp/
 
 # OS
 .DS_Store

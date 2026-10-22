@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { formatINR, formatINRCompact, parseINR, rupeesToPaise, paiseToRupees, assertPaise, assertSignedPaise } from './money';
+import {
+  formatINR,
+  formatINRCompact,
+  parseINR,
+  rupeesToPaise,
+  paiseToRupees,
+  assertPaise,
+  assertSignedPaise,
+} from './money';
 
 describe('formatINR', () => {
   it('formats zero', () => {
@@ -30,6 +38,10 @@ describe('formatINR', () => {
     const result = formatINR(10000000); // 1 lakh rupees = 1,00,000 in Indian format
     expect(result).toContain('₹');
     expect(result).toContain('1,00,000');
+  });
+
+  it('preserves exact paise when formatting the largest safe integer', () => {
+    expect(formatINR(Number.MAX_SAFE_INTEGER)).toBe('₹9,00,71,99,25,47,409.91');
   });
 });
 
@@ -69,6 +81,17 @@ describe('parseINR', () => {
 
   it('parses with commas', () => {
     expect(parseINR('1,00,000')).toBe(10000000);
+    expect(parseINR('100,000.25')).toBe(10000025);
+  });
+
+  it('rejects malformed comma grouping', () => {
+    expect(parseINR('1,0,00')).toBeNull();
+    expect(parseINR(',100')).toBeNull();
+  });
+
+  it('rejects misplaced or repeated currency symbols', () => {
+    expect(parseINR('100₹')).toBeNull();
+    expect(parseINR('₹₹100')).toBeNull();
   });
 
   it('returns null for empty string', () => {
@@ -94,6 +117,10 @@ describe('parseINR', () => {
   it('returns null for three decimal places', () => {
     expect(parseINR('10.123')).toBeNull();
   });
+
+  it('returns null when paise exceed JavaScript safe integer precision', () => {
+    expect(parseINR('90071992547410')).toBeNull();
+  });
 });
 
 describe('rupeesToPaise', () => {
@@ -108,6 +135,12 @@ describe('rupeesToPaise', () => {
   it('rounds correctly to avoid floating point', () => {
     // 0.1 + 0.2 = 0.30000000000000004 in JS
     expect(rupeesToPaise(0.1 + 0.2)).toBe(30);
+  });
+
+  it('rejects non-finite, negative, and unsafe amounts', () => {
+    expect(() => rupeesToPaise(Number.NaN)).toThrow();
+    expect(() => rupeesToPaise(-1)).toThrow();
+    expect(() => rupeesToPaise(Number.MAX_SAFE_INTEGER)).toThrow();
   });
 });
 
@@ -134,6 +167,10 @@ describe('assertPaise', () => {
   it('throws for string', () => {
     expect(() => assertPaise('100')).toThrow();
   });
+
+  it('throws for integers beyond safe precision', () => {
+    expect(() => assertPaise(Number.MAX_SAFE_INTEGER + 1)).toThrow();
+  });
 });
 
 describe('assertSignedPaise', () => {
@@ -143,5 +180,9 @@ describe('assertSignedPaise', () => {
 
   it('throws for float', () => {
     expect(() => assertSignedPaise(1.5)).toThrow();
+  });
+
+  it('throws for integers beyond safe precision', () => {
+    expect(() => assertSignedPaise(Number.MIN_SAFE_INTEGER - 1)).toThrow();
   });
 });

@@ -4,18 +4,16 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 /**
  * delete-account Edge Function
  *
- * Securely deletes a user's account and associated data.
+ * Attempts Auth-user deletion after profile deactivation.
  * Requires the user to be authenticated.
  *
- * The function:
- * 1. Verifies the caller is authenticated.
- * 2. Soft-deletes the user profile (sets deleted_at).
- * 3. Removes the user from all active group memberships.
- * 4. Deletes the Auth user (via service-role client).
+ * The caller must first invoke delete_account(), which transactionally
+ * anonymizes the profile and closes active relationships. This function then
+ * verifies that tombstone before attempting irreversible Auth-user deletion.
  *
- * Financial records (expenses, settlements, expense_shares) are NOT hard-deleted
- * because they affect other users' balances and represent immutable financial history.
- * The profile row is soft-deleted; the display_name is anonymized.
+ * Financial rows and their pseudonymized profile references are retained for
+ * balances and auditability. Migration 20261021223159 removes only the profile
+ * cascade to auth.users so Auth deletion does not erase ledger attribution.
  *
  * Security: This function uses the SERVICE_ROLE_KEY server-side only.
  * It is NEVER exposed to the browser.
@@ -67,62 +65,32 @@ serve(async (req: Request) => {
       auth: { persistSession: false },
     });
 
-    // 1. Soft-delete and anonymize the profile
-    const { error: profileError } = await adminClient
+    // The database RPC must commit the tombstone before Auth deletion starts.
+    const { data: profile, error: profileError } = await adminClient
       .from('profiles')
-      .update({
-        deleted_at: new Date().toISOString(),
-        display_name: '[Deleted User]',
-        username: `deleted_${userId.substring(0, 8)}`,
-        avatar_url: null,
-        bio: null,
-        upi_id: null,
-      })
-      .eq('id', userId);
+      .select('id, deleted_at')
+      .eq('id', userId)
+      .maybeSingle();
 
     if (profileError) {
-      console.error('Profile soft-delete error:', profileError);
-      // Continue anyway — auth deletion is more critical
+      return new Response(
+        JSON.stringify({ error: 'Could not verify the anonymized account profile; Auth-user deletion was not attempted.' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!profile || !profile.deleted_at) {
+      return new Response(
+        JSON.stringify({ error: 'Account profile must be anonymized before Auth-user deletion.' }),
+        { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // 2. Remove from all active group memberships
-    const { error: memberError } = await adminClient
-      .from('group_members')
-      .update({ removed_at: new Date().toISOString() })
-      .eq('user_id', userId)
-      .is('removed_at', null);
-
-    if (memberError) {
-      console.error('Group member removal error:', memberError);
-    }
-
-    // 3. Cancel pending friend requests
-    const { error: frError } = await adminClient
-      .from('friend_requests')
-      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
-      .eq('status', 'pending');
-
-    if (frError) {
-      console.error('Friend request cancellation error:', frError);
-    }
-
-    // 4. Revoke all invitation tokens
-    const { error: tokenError } = await adminClient
-      .from('invitation_tokens')
-      .update({ revoked_at: new Date().toISOString() })
-      .eq('creator_id', userId)
-      .is('revoked_at', null);
-
-    if (tokenError) {
-      console.error('Token revocation error:', tokenError);
-    }
-
-    // 5. Delete the Auth user (this is irreversible)
+    // Auth deletion is intentionally attempted only after the profile
+    // tombstone commits; the retention migration preserves its ledger references.
     const { error: deleteError } = await adminClient.auth.admin.deleteUser(userId);
     if (deleteError) {
       return new Response(
-        JSON.stringify({ error: 'Failed to delete account. Please try again or contact support.' }),
+        JSON.stringify({ error: 'Profile data was anonymized, but Auth-user deletion failed. Financial history is retained; contact support.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -132,8 +100,8 @@ serve(async (req: Request) => {
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (err) {
-    console.error('Unexpected error in delete-account:', err);
+  } catch (error) {
+    console.error('Unexpected error in delete-account', error);
     return new Response(
       JSON.stringify({ error: 'Internal server error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

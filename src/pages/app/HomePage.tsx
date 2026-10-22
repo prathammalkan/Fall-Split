@@ -1,6 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, ChevronRight, Bell, Users, ArrowUpRight, ArrowDownLeft, RefreshCw, Handshake } from 'lucide-react';
+import {
+  Plus,
+  ChevronRight,
+  Bell,
+  Users,
+  ArrowUpRight,
+  ArrowDownLeft,
+  RefreshCw,
+  Handshake,
+} from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
@@ -15,11 +24,11 @@ interface FriendBalance {
 }
 
 interface HomeData {
-  netPaise: number;       // overall: positive = you are owed, negative = you owe
-  owedToPaise: number;    // total others owe you (confirmed)
-  owingPaise: number;     // total you owe others (confirmed)
-  youOwe: FriendBalance[];      // negative netPaise: you owe them
-  owedToYou: FriendBalance[];   // positive netPaise: they owe you
+  netPaise: number; // overall: positive = you are owed, negative = you owe
+  owedToPaise: number; // total others owe you (confirmed)
+  owingPaise: number; // total you owe others (confirmed)
+  youOwe: FriendBalance[]; // negative netPaise: you owe them
+  owedToYou: FriendBalance[]; // positive netPaise: they owe you
 }
 
 type LoadState = 'loading' | 'loaded' | 'error' | 'empty';
@@ -47,19 +56,22 @@ export function HomePage() {
         return;
       }
 
-      const otherIds = rawBalances.map(b => b.other_user_id);
+      const otherIds = rawBalances.map((b) => b.other_user_id);
       const { data: profileData, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', otherIds)
-        .is('deleted_at', null);
+        .from('discoverable_profiles')
+        .select('id, username, display_name, avatar_url')
+        .in('id', otherIds);
       if (profileError) throw profileError;
       const profiles = (profileData ?? []) as unknown as Profile[];
-      const missingProfileIds = otherIds.filter(id => !profiles.some(profile => profile.id === id));
+      const missingProfileIds = otherIds.filter(
+        (id) => !profiles.some((profile) => profile.id === id)
+      );
       if (missingProfileIds.length > 0) {
         // Soft-deleted or missing profiles are intentionally excluded from the current
         // balance view rather than crashing the whole dashboard.
-        rawBalances = rawBalances.filter(balance => !missingProfileIds.includes(balance.other_user_id));
+        rawBalances = rawBalances.filter(
+          (balance) => !missingProfileIds.includes(balance.other_user_id)
+        );
       }
 
       let owedToPaise = 0;
@@ -69,10 +81,14 @@ export function HomePage() {
 
       for (const b of rawBalances) {
         if (Math.abs(b.net_paise) < 1) continue; // ignore sub-paise noise
-        const prof = profiles.find(p => p.id === b.other_user_id);
+        const prof = profiles.find((p) => p.id === b.other_user_id);
         if (!prof) continue;
 
-        const entry: FriendBalance = { userId: b.other_user_id, profile: prof, netPaise: b.net_paise };
+        const entry: FriendBalance = {
+          userId: b.other_user_id,
+          profile: prof,
+          netPaise: b.net_paise,
+        };
 
         if (b.net_paise > 0) {
           owedToPaise += b.net_paise;
@@ -118,11 +134,12 @@ export function HomePage() {
 
   const isLoading = loadState === 'loading';
   const hasError = loadState === 'error';
-  const isEmpty = loadState === 'empty' || (data && data.owedToPaise === 0 && data.owingPaise === 0);
+  const isEmpty =
+    loadState === 'empty' || (data && data.owedToPaise === 0 && data.owingPaise === 0);
 
   const summaryHeadline = (() => {
     if (!data) return 'Checking your balances…';
-    if (data.owingPaise === 0 && data.owedToPaise === 0) return 'You\'re all caught up.';
+    if (data.owingPaise === 0 && data.owedToPaise === 0) return "You're all caught up.";
     if (data.owingPaise > 0 && data.owedToPaise > 0) {
       return `You need to pay ${formatINR(data.owingPaise)}. You should receive ${formatINR(data.owedToPaise)}.`;
     }
@@ -135,12 +152,12 @@ export function HomePage() {
   return (
     <div className="page-content">
       {/* Header */}
-      <header className="flex items-center justify-between mb-6">
+      <header className="mb-6 flex items-center justify-between">
         <LogoFull />
         <div className="flex items-center gap-2">
           <Link
             to="/settlements"
-            className="btn-ghost p-2 rounded-full"
+            className="btn-ghost rounded-full p-2"
             aria-label="Paid, received, and pending payments"
             title="Payments"
           >
@@ -148,16 +165,23 @@ export function HomePage() {
           </Link>
           <button
             onClick={() => void loadHomeData()}
-            className="btn-ghost p-2 rounded-full"
+            className="btn-ghost rounded-full p-2"
             aria-label="Refresh balances"
             disabled={isLoading}
           >
             <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} />
           </button>
-          <Link to="/notifications" className="relative btn-ghost p-2 rounded-full" aria-label="Notifications">
+          <Link
+            to="/notifications"
+            className="btn-ghost relative rounded-full p-2"
+            aria-label="Notifications"
+          >
             <Bell size={20} />
             {unreadCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-[rgb(var(--color-accent))] text-white rounded-full text-[10px] flex items-center justify-center font-bold" aria-label={`${unreadCount} unread notifications`}>
+              <span
+                className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[rgb(var(--color-accent))] text-[10px] font-bold text-white"
+                aria-label={`${unreadCount} unread notifications`}
+              >
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}
@@ -167,7 +191,10 @@ export function HomePage() {
 
       {/* Email verification warning */}
       {!emailVerified && (
-        <div className="rounded-lg p-3 mb-4 bg-[rgb(var(--color-pending)/0.1)] border border-[rgb(var(--color-pending)/0.3)]" role="alert">
+        <div
+          className="mb-4 rounded-lg border border-[rgb(var(--color-pending)/0.3)] bg-[rgb(var(--color-pending)/0.1)] p-3"
+          role="alert"
+        >
           <p className="text-sm text-[rgb(var(--color-pending))]">
             📧 Verify your email to send invites, join groups, and create expenses.
           </p>
@@ -176,9 +203,14 @@ export function HomePage() {
 
       {/* Error state */}
       {hasError && (
-        <div className="rounded-lg p-4 mb-4 bg-[rgb(var(--color-negative)/0.08)] border border-[rgb(var(--color-negative)/0.2)]" role="alert">
-          <p className="text-sm font-medium text-[rgb(var(--color-negative))] mb-2">Could not load balances</p>
-          <p className="text-xs text-muted mb-3">Check your connection and try again.</p>
+        <div
+          className="mb-4 rounded-lg border border-[rgb(var(--color-negative)/0.2)] bg-[rgb(var(--color-negative)/0.08)] p-4"
+          role="alert"
+        >
+          <p className="mb-2 text-sm font-medium text-[rgb(var(--color-negative))]">
+            Could not load balances
+          </p>
+          <p className="text-muted mb-3 text-xs">Check your connection and try again.</p>
           <button onClick={() => void loadHomeData()} className="btn-secondary text-sm">
             <RefreshCw size={14} /> Try again
           </button>
@@ -188,20 +220,32 @@ export function HomePage() {
       {/* Balance hero card */}
       {!isLoading && !hasError && data && (data.owedToPaise > 0 || data.owingPaise > 0) && (
         <div className="balance-hero mb-6" aria-label="Overall balance summary" aria-live="polite">
-          <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10" aria-hidden="true" />
-          <div className="absolute -right-4 -bottom-10 w-28 h-28 rounded-full bg-white/5" aria-hidden="true" />
+          <div
+            className="absolute -top-8 -right-8 h-40 w-40 rounded-full bg-white/10"
+            aria-hidden="true"
+          />
+          <div
+            className="absolute -right-4 -bottom-10 h-28 w-28 rounded-full bg-white/5"
+            aria-hidden="true"
+          />
           <div className="relative">
-            <p className="text-white/70 text-sm font-medium mb-1">Quick summary</p>
-            <p className="text-lg font-semibold text-white mb-3 leading-snug max-w-sm">{summaryHeadline}</p>
+            <p className="mb-1 text-sm font-medium text-white/70">Quick summary</p>
+            <p className="mb-3 max-w-sm text-lg leading-snug font-semibold text-white">
+              {summaryHeadline}
+            </p>
             <div className="flex gap-6">
               <div className="stat-item">
-                <p className="text-white/60 text-xs mb-0.5">You need to pay</p>
-                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owingPaise)}</p>
+                <p className="mb-0.5 text-xs text-white/60">You need to pay</p>
+                <p className="text-lg font-bold text-white tabular-nums">
+                  {formatINR(data.owingPaise)}
+                </p>
               </div>
               <div className="w-px bg-white/20" />
               <div className="stat-item">
-                <p className="text-white/60 text-xs mb-0.5">You should receive</p>
-                <p className="text-white font-bold tabular-nums text-lg">{formatINR(data.owedToPaise)}</p>
+                <p className="mb-0.5 text-xs text-white/60">You should receive</p>
+                <p className="text-lg font-bold text-white tabular-nums">
+                  {formatINR(data.owedToPaise)}
+                </p>
               </div>
             </div>
           </div>
@@ -210,16 +254,18 @@ export function HomePage() {
 
       {!isLoading && !hasError && data && data.owedToPaise === 0 && data.owingPaise === 0 && (
         <div className="card mb-4" aria-live="polite">
-          <p className="text-center text-base font-semibold text-primary">You&apos;re all caught up.</p>
+          <p className="text-primary text-center text-base font-semibold">
+            You&apos;re all caught up.
+          </p>
         </div>
       )}
 
       {/* Settled up summary for empty state placeholder */}
       {isLoading && (
         <div className="card mb-4" aria-label="Loading balance">
-          <div className="text-center py-2">
-            <div className="skeleton h-10 w-36 mx-auto mb-2" aria-hidden="true" />
-            <div className="skeleton h-4 w-48 mx-auto" aria-hidden="true" />
+          <div className="py-2 text-center">
+            <div className="skeleton mx-auto mb-2 h-10 w-36" aria-hidden="true" />
+            <div className="skeleton mx-auto h-4 w-48" aria-hidden="true" />
           </div>
         </div>
       )}
@@ -228,10 +274,14 @@ export function HomePage() {
       {!isLoading && (data?.youOwe.length ?? 0) > 0 && (
         <div className="mb-4">
           <p className="section-title mb-2 flex items-center gap-1.5">
-            <ArrowUpRight size={14} className="text-[rgb(var(--color-negative))]" aria-hidden="true" />
+            <ArrowUpRight
+              size={14}
+              className="text-[rgb(var(--color-negative))]"
+              aria-hidden="true"
+            />
             People to pay
           </p>
-          <div className="card p-0 overflow-hidden" role="list">
+          <div className="card overflow-hidden p-0" role="list">
             {data!.youOwe.map((b) => (
               <Link
                 key={b.userId}
@@ -241,13 +291,17 @@ export function HomePage() {
                 aria-label={`You need to pay ${b.profile.display_name} ${formatINR(Math.abs(b.netPaise))}`}
               >
                 <Avatar src={b.profile.avatar_url} name={b.profile.display_name} size={36} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-primary truncate">{b.profile.display_name}</p>
-                  <p className="text-xs text-muted">You need to pay</p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-primary truncate text-sm font-medium">
+                    {b.profile.display_name}
+                  </p>
+                  <p className="text-muted text-xs">You need to pay</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold text-[rgb(var(--color-negative))] tabular-nums">{formatINR(Math.abs(b.netPaise))}</p>
-                  <p className="text-xs text-muted">Pay →</p>
+                  <p className="text-sm font-semibold text-[rgb(var(--color-negative))] tabular-nums">
+                    {formatINR(Math.abs(b.netPaise))}
+                  </p>
+                  <p className="text-muted text-xs">Pay →</p>
                 </div>
                 <ChevronRight size={16} className="text-muted flex-shrink-0" aria-hidden="true" />
               </Link>
@@ -260,10 +314,14 @@ export function HomePage() {
       {!isLoading && (data?.owedToYou.length ?? 0) > 0 && (
         <div className="mb-4">
           <p className="section-title mb-2 flex items-center gap-1.5">
-            <ArrowDownLeft size={14} className="text-[rgb(var(--color-positive))]" aria-hidden="true" />
+            <ArrowDownLeft
+              size={14}
+              className="text-[rgb(var(--color-positive))]"
+              aria-hidden="true"
+            />
             People who need to pay you
           </p>
-          <div className="card p-0 overflow-hidden" role="list">
+          <div className="card overflow-hidden p-0" role="list">
             {data!.owedToYou.map((b) => (
               <Link
                 key={b.userId}
@@ -273,13 +331,17 @@ export function HomePage() {
                 aria-label={`${b.profile.display_name} needs to pay you ${formatINR(b.netPaise)}`}
               >
                 <Avatar src={b.profile.avatar_url} name={b.profile.display_name} size={36} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-primary truncate">{b.profile.display_name}</p>
-                  <p className="text-xs text-muted">Needs to pay you</p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-primary truncate text-sm font-medium">
+                    {b.profile.display_name}
+                  </p>
+                  <p className="text-muted text-xs">Needs to pay you</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold text-[rgb(var(--color-positive))] tabular-nums">{formatINR(b.netPaise)}</p>
-                  <p className="text-xs text-muted">Review →</p>
+                  <p className="text-sm font-semibold text-[rgb(var(--color-positive))] tabular-nums">
+                    {formatINR(b.netPaise)}
+                  </p>
+                  <p className="text-muted text-xs">Review →</p>
                 </div>
                 <ChevronRight size={16} className="text-muted flex-shrink-0" aria-hidden="true" />
               </Link>
@@ -290,17 +352,23 @@ export function HomePage() {
 
       {/* Empty state for new users */}
       {!isLoading && isEmpty && !hasError && (
-        <div className="card text-center py-8">
-          <div className="w-16 h-16 rounded-2xl bg-[rgb(var(--color-accent)/0.1)] flex items-center justify-center mx-auto mb-4">
+        <div className="card py-8 text-center">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[rgb(var(--color-accent)/0.1)]">
             <Users size={32} className="text-[rgb(var(--color-accent))]" aria-hidden="true" />
           </div>
-          <h2 className="text-base font-semibold text-primary mb-2">You have no unpaid expenses.</h2>
-          <p className="text-sm text-muted mb-4 max-w-xs mx-auto">
+          <h2 className="text-primary mb-2 text-base font-semibold">
+            You have no unpaid expenses.
+          </h2>
+          <p className="text-muted mx-auto mb-4 max-w-xs text-sm">
             Add a friend or record a new expense to keep things moving.
           </p>
-          <div className="flex flex-col gap-2 max-w-xs mx-auto">
-            <Link to="/friends" className="btn-primary">Add a friend</Link>
-            <button onClick={() => navigate('/expenses/new')} className="btn-secondary">Add an expense</button>
+          <div className="mx-auto flex max-w-xs flex-col gap-2">
+            <Link to="/friends" className="btn-primary">
+              Add a friend
+            </Link>
+            <button onClick={() => navigate('/expenses/new')} className="btn-secondary">
+              Add an expense
+            </button>
           </div>
         </div>
       )}
@@ -308,9 +376,9 @@ export function HomePage() {
       {/* Loading state list skeleton */}
       {isLoading && (
         <div className="space-y-3" aria-busy="true" aria-label="Loading balances">
-          {[1, 2, 3].map(i => (
+          {[1, 2, 3].map((i) => (
             <div key={i} className="card flex items-center gap-3">
-              <div className="skeleton w-9 h-9 rounded-full flex-shrink-0" />
+              <div className="skeleton h-9 w-9 flex-shrink-0 rounded-full" />
               <div className="flex-1 space-y-1.5">
                 <div className="skeleton h-4 w-32" />
                 <div className="skeleton h-3 w-20" />
@@ -323,15 +391,16 @@ export function HomePage() {
 
       {/* Last synced indicator */}
       {lastRefreshed && !isLoading && (
-        <p className="text-xs text-muted text-center mt-4">
-          Updated {lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+        <p className="text-muted mt-4 text-center text-xs">
+          Updated{' '}
+          {lastRefreshed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
         </p>
       )}
 
       {/* Add expense FAB */}
       <button
         onClick={() => navigate('/expenses/new')}
-        className="btn-primary fixed bottom-[calc(72px+env(safe-area-inset-bottom))] right-4 shadow-lg rounded-full px-5 py-3 z-30"
+        className="btn-primary fixed right-4 bottom-[calc(72px+env(safe-area-inset-bottom))] z-30 rounded-full px-5 py-3 shadow-lg"
         aria-label="Add expense"
       >
         <Plus size={20} aria-hidden="true" /> Add expense

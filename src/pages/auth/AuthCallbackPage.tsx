@@ -54,7 +54,9 @@ export function AuthCallbackPage() {
     });
 
     // Listen for SIGNED_IN — fired when Supabase auto-exchanges the PKCE code
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session) {
         subscription.unsubscribe();
         navigate(getDestination(), { replace: true });
@@ -63,7 +65,9 @@ export function AuthCallbackPage() {
 
     // Safety timeout
     const timeout = setTimeout(async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       subscription.unsubscribe();
       if (session) {
         navigate(getDestination(), { replace: true });
@@ -80,10 +84,10 @@ export function AuthCallbackPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="flex min-h-screen items-center justify-center px-4">
         <div className="w-full max-w-sm">
           <ErrorMessage message={error} />
-          <button onClick={() => navigate('/login')} className="btn-secondary w-full mt-4">
+          <button onClick={() => navigate('/login')} className="btn-secondary mt-4 w-full">
             Back to sign in
           </button>
         </div>

@@ -1,5 +1,5 @@
 /* Fall Split — Global Styles */
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @layer base {
   :root {
@@ -11,10 +11,10 @@
     --color-text-primary: 15 15 15;
     --color-text-secondary: 107 107 107;
     --color-text-muted: 163 163 163;
-    --color-accent: 249 115 22;    /* orange-500 */
-    --color-positive: 22 163 74;   /* green-600 */
-    --color-negative: 220 38 38;   /* red-600 */
-    --color-pending: 217 119 6;    /* amber-600 */
+    --color-accent: 249 115 22; /* orange-500 */
+    --color-positive: 22 163 74; /* green-600 */
+    --color-negative: 220 38 38; /* red-600 */
+    --color-pending: 217 119 6; /* amber-600 */
   }
 
   @media (prefers-color-scheme: dark) {
@@ -27,9 +27,9 @@
       --color-text-secondary: 163 163 163;
       --color-text-muted: 107 107 107;
       --color-accent: 249 115 22;
-      --color-positive: 34 197 94;   /* green-500 */
-      --color-negative: 239 68 68;   /* red-500 */
-      --color-pending: 245 158 11;   /* amber-500 */
+      --color-positive: 34 197 94; /* green-500 */
+      --color-negative: 239 68 68; /* red-500 */
+      --color-pending: 245 158 11; /* amber-500 */
     }
   }
 
@@ -40,8 +40,13 @@
   }
 
   body {
-    @apply text-[rgb(var(--color-text-primary))] bg-[rgb(var(--color-bg))];
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    @apply bg-[rgb(var(--color-bg))] text-[rgb(var(--color-text-primary))];
+    font-family:
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
     /* iOS safe area support */
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
@@ -51,7 +56,9 @@
 
   /* Reduce motion for users who prefer it */
   @media (prefers-reduced-motion: reduce) {
-    *, ::before, ::after {
+    *,
+    ::before,
+    ::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
@@ -61,7 +68,7 @@
 
   /* Focus styles */
   :focus-visible {
-    @apply outline-2 outline-offset-2 outline-orange-500 rounded-sm;
+    @apply rounded-sm outline-2 outline-offset-2 outline-orange-500;
   }
 
   /* Selection */
@@ -73,7 +80,7 @@
 @layer components {
   /* App shell */
   .app-shell {
-    @apply min-h-screen flex flex-col;
+    @apply flex min-h-screen flex-col;
     max-width: 768px;
     margin: 0 auto;
     width: 100%;
@@ -81,7 +88,7 @@
 
   /* Bottom nav */
   .bottom-nav {
-    @apply fixed bottom-0 left-0 right-0 z-40;
+    @apply fixed right-0 bottom-0 left-0 z-40;
     padding-bottom: env(safe-area-inset-bottom);
     background: rgb(var(--color-bg));
     border-top: 1px solid rgb(var(--color-border));
@@ -89,7 +96,7 @@
 
   /* Page padding accounting for bottom nav */
   .page-content {
-    @apply pb-24 pt-4 px-4;
+    @apply px-4 pt-4 pb-24;
   }
 
   /* Financial amounts */
@@ -123,7 +130,7 @@
 
   /* Gradient hero card for home page balance summary */
   .balance-hero {
-    @apply rounded-2xl p-6 relative overflow-hidden;
+    @apply relative overflow-hidden rounded-2xl p-6;
     background: linear-gradient(135deg, rgb(var(--color-accent)) 0%, rgb(249 115 22 / 0.8) 100%);
     color: white;
   }
@@ -135,7 +142,7 @@
 
   /* Pill / chip */
   .chip {
-    @apply inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium;
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium;
     background: rgb(var(--color-bg-tertiary));
     color: rgb(var(--color-text-secondary));
     border: 1px solid rgb(var(--color-border));
@@ -161,7 +168,7 @@
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold;
     @apply transition-all duration-100 active:scale-95;
-    @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+    @apply disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100;
     background: rgb(var(--color-accent));
     color: white;
     min-height: 44px;
@@ -173,7 +180,7 @@
   .btn-secondary {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium;
     @apply transition-all duration-100 active:scale-95;
-    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
     background: rgb(var(--color-bg-tertiary));
     color: rgb(var(--color-text-primary));
     border: 1px solid rgb(var(--color-border));
@@ -195,7 +202,7 @@
   .btn-danger {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold;
     @apply transition-all duration-100 active:scale-95;
-    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
     background: rgb(var(--color-negative));
     color: white;
     min-height: 44px;
@@ -208,7 +215,7 @@
 
   /* Section header */
   .section-title {
-    @apply text-xs font-semibold uppercase tracking-wider;
+    @apply text-xs font-semibold tracking-wider uppercase;
     color: rgb(var(--color-text-muted));
   }
 
@@ -245,7 +252,7 @@
 
   /* List item */
   .list-item {
-    @apply flex items-center gap-3 px-4 py-3 cursor-pointer;
+    @apply flex cursor-pointer items-center gap-3 px-4 py-3;
     @apply transition-colors duration-100;
     border-bottom: 1px solid rgb(var(--color-border));
   }
@@ -258,7 +265,7 @@
 
   /* Avatar */
   .avatar {
-    @apply rounded-full object-cover flex-shrink-0;
+    @apply flex-shrink-0 rounded-full object-cover;
     background: rgb(var(--color-bg-tertiary));
   }
 
@@ -273,13 +280,31 @@
 }
 
 @layer utilities {
-  .text-primary { color: rgb(var(--color-text-primary)); }
-  .text-secondary { color: rgb(var(--color-text-secondary)); }
-  .text-muted { color: rgb(var(--color-text-muted)); }
-  .bg-app { background: rgb(var(--color-bg)); }
-  .bg-secondary { background: rgb(var(--color-bg-secondary)); }
-  .bg-tertiary { background: rgb(var(--color-bg-tertiary)); }
-  .border-app { border-color: rgb(var(--color-border)); }
-  .accent { color: rgb(var(--color-accent)); }
-  .tabular-nums { font-variant-numeric: tabular-nums; }
+  .text-primary {
+    color: rgb(var(--color-text-primary));
+  }
+  .text-secondary {
+    color: rgb(var(--color-text-secondary));
+  }
+  .text-muted {
+    color: rgb(var(--color-text-muted));
+  }
+  .bg-app {
+    background: rgb(var(--color-bg));
+  }
+  .bg-secondary {
+    background: rgb(var(--color-bg-secondary));
+  }
+  .bg-tertiary {
+    background: rgb(var(--color-bg-tertiary));
+  }
+  .border-app {
+    border-color: rgb(var(--color-border));
+  }
+  .accent {
+    color: rgb(var(--color-accent));
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
 }

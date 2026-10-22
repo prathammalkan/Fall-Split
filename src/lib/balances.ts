@@ -15,15 +15,149 @@ import type { PairBalance, SimplifiedDebt } from '../types';
 export interface RawLedgerEntry {
   payerUserId: string;
   participantUserId: string;
-  amountPaise: number;  // what participant owes payer for this expense
+  amountPaise: number; // what participant owes payer for this expense
   groupId?: string | null;
 }
 
 export interface SettledEntry {
-  payerUserId: string;    // person who paid
+  payerUserId: string; // person who paid
   recipientUserId: string; // person who received
   amountPaise: number;
   groupId?: string | null;
+}
+
+export function allocateExpensePayerShares(
+  shares: { userId: string; amountPaise: number }[],
+  payers: { userId: string; amountPaise: number }[]
+): { payerUserId: string; participantUserId: string; amountPaise: number }[] {
+  const validateUniqueAmounts = (
+    entries: { userId: string; amountPaise: number }[],
+    label: string
+  ) => {
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (ids.has(entry.userId)) throw new Error(`${label} IDs must be unique`);
+      ids.add(entry.userId);
+      if (!Number.isSafeInteger(entry.amountPaise) || entry.amountPaise < 0) {
+        throw new Error(`${label} amounts must be non-negative safe integers`);
+      }
+    }
+  };
+
+  validateUniqueAmounts(shares, 'Participant');
+  validateUniqueAmounts(payers, 'Payer');
+  if (shares.length === 0 || payers.length === 0) {
+    throw new Error('An expense requires at least one participant and payer');
+  }
+
+  const totalShare = shares.reduce((sum, item) => sum + BigInt(item.amountPaise), 0n);
+  const totalPaid = payers.reduce((sum, item) => sum + BigInt(item.amountPaise), 0n);
+  if (totalShare <= 0n || totalShare !== totalPaid) {
+    throw new Error('Payer totals must equal participant shares');
+  }
+
+  const orderedShares = [...shares].sort((a, b) =>
+    a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0
+  );
+  const orderedPayers = [...payers].sort((a, b) =>
+    a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0
+  );
+  const shareCount = orderedShares.length;
+  const payerCount = orderedPayers.length;
+  const base = Array.from({ length: shareCount }, () => Array<bigint>(payerCount).fill(0n));
+  const remainders = Array.from({ length: shareCount }, () => Array<bigint>(payerCount).fill(0n));
+  const selected = Array.from({ length: shareCount }, () => Array<boolean>(payerCount).fill(false));
+  const rowNeeds = Array<number>(shareCount).fill(0);
+  const columnNeeds = Array<number>(payerCount).fill(0);
+  for (let row = 0; row < shareCount; row++) {
+    let rowBase = 0n;
+    for (let column = 0; column < payerCount; column++) {
+      const numerator =
+        BigInt(orderedShares[row]!.amountPaise) * BigInt(orderedPayers[column]!.amountPaise);
+      base[row]![column] = numerator / totalPaid;
+      remainders[row]![column] = numerator % totalPaid;
+      rowBase += base[row]![column]!;
+    }
+    rowNeeds[row] = Number(BigInt(orderedShares[row]!.amountPaise) - rowBase);
+  }
+
+  for (let column = 0; column < payerCount; column++) {
+    const columnBase = base.reduce((sum, row) => sum + row[column]!, 0n);
+    columnNeeds[column] = Number(BigInt(orderedPayers[column]!.amountPaise) - columnBase);
+  }
+
+  for (let startRow = 0; startRow < shareCount; startRow++) {
+    while (rowNeeds[startRow]! > 0) {
+      const nodeCount = shareCount + payerCount;
+      const parent = Array<number>(nodeCount).fill(-1);
+      const queue = [startRow];
+      parent[startRow] = startRow;
+      let head = 0;
+      let endpoint = -1;
+
+      while (head < queue.length && endpoint === -1) {
+        const node = queue[head++]!;
+        if (node < shareCount) {
+          const candidateColumns = Array.from({ length: payerCount }, (_, index) => index)
+            .filter((column) => remainders[node]![column]! > 0n && !selected[node]![column])
+            .sort((a, b) => {
+              const left = remainders[node]![a]!;
+              const right = remainders[node]![b]!;
+              if (left !== right) return left > right ? -1 : 1;
+              const leftId = orderedPayers[a]!.userId;
+              const rightId = orderedPayers[b]!.userId;
+              return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+            });
+          for (const column of candidateColumns) {
+            const columnNode = shareCount + column;
+            if (parent[columnNode] !== -1) continue;
+            parent[columnNode] = node;
+            queue.push(columnNode);
+            if (columnNeeds[column]! > 0) {
+              endpoint = columnNode;
+              break;
+            }
+          }
+        } else {
+          const column = node - shareCount;
+          for (let row = 0; row < shareCount; row++) {
+            if (!selected[row]![column] || parent[row] !== -1) continue;
+            parent[row] = node;
+            queue.push(row);
+          }
+        }
+      }
+
+      if (endpoint === -1) throw new Error('Could not reconcile integer-paise expense allocation');
+
+      let columnNode = endpoint;
+      while (true) {
+        const rowNode = parent[columnNode]!;
+        const column = columnNode - shareCount;
+        selected[rowNode]![column] = true;
+        if (rowNode === startRow) break;
+        const previousColumnNode = parent[rowNode]!;
+        selected[rowNode]![previousColumnNode - shareCount] = false;
+        columnNode = previousColumnNode;
+      }
+
+      rowNeeds[startRow] = rowNeeds[startRow]! - 1;
+      const endpointColumn = endpoint - shareCount;
+      columnNeeds[endpointColumn] = columnNeeds[endpointColumn]! - 1;
+    }
+  }
+
+  if (columnNeeds.some((amount) => amount !== 0)) {
+    throw new Error('Could not reconcile payer totals to participant shares');
+  }
+
+  return orderedShares.flatMap((share, row) =>
+    orderedPayers.map((payer, column) => ({
+      payerUserId: payer.userId,
+      participantUserId: share.userId,
+      amountPaise: Number(base[row]![column]! + (selected[row]![column] ? 1n : 0n)),
+    }))
+  );
 }
 
 /**
@@ -88,7 +222,7 @@ export function calculatePairBalances(
     results.push({
       userId: pair.userA,
       otherUserId: pair.userB,
-      netPaise: pair.netPaise,  // positive = userA is owed
+      netPaise: pair.netPaise, // positive = userA is owed
       groupId,
     });
     results.push({
@@ -112,9 +246,7 @@ export function calculatePairBalances(
  * Preserves the same net position for every participant.
  * Deterministic: sorts by userId for tie-breaking.
  */
-export function simplifyDebts(
-  balances: { userId: string; netPaise: number }[]
-): SimplifiedDebt[] {
+export function simplifyDebts(balances: { userId: string; netPaise: number }[]): SimplifiedDebt[] {
   // Validate: sum of all balances must be zero
   const total = balances.reduce((acc, b) => acc + b.netPaise, 0);
   if (Math.abs(total) > 1) {
@@ -165,7 +297,10 @@ export function simplifyDebts(
 /**
  * Calculate a user's aggregate balance from pair balances
  */
-export function aggregateBalance(pairBalances: PairBalance[], userId: string): {
+export function aggregateBalance(
+  pairBalances: PairBalance[],
+  userId: string
+): {
   netPaise: number;
   owedToPaise: number;
   owingPaise: number;

@@ -13,7 +13,7 @@ const GROUP_TYPES = [
   { value: 'custom', label: '⚡ Custom group' },
 ] as const;
 
-type GroupType = typeof GROUP_TYPES[number]['value'];
+type GroupType = (typeof GROUP_TYPES)[number]['value'];
 
 export function CreateGroupPage() {
   const { user } = useAuth();
@@ -27,7 +27,10 @@ export function CreateGroupPage() {
   const handleCreate = async () => {
     if (!user) return;
     const trimmedName = name.trim();
-    if (!trimmedName) { setError('Group name is required.'); return; }
+    if (!trimmedName) {
+      setError('Group name is required.');
+      return;
+    }
     setSaving(true);
     setError(null);
 
@@ -62,7 +65,7 @@ export function CreateGroupPage() {
   return (
     <div>
       <PageHeader title="New group" back />
-      <div className="page-content pt-4 space-y-4">
+      <div className="page-content space-y-4 pt-4">
         {error && <ErrorMessage message={error} />}
 
         <div className="grid grid-cols-2 gap-2">
@@ -70,7 +73,7 @@ export function CreateGroupPage() {
             <button
               key={t.value}
               onClick={() => setGroupType(t.value)}
-              className={`py-3 px-4 rounded-xl text-sm font-medium text-left transition-colors ${
+              className={`rounded-xl px-4 py-3 text-left text-sm font-medium transition-colors ${
                 groupType === t.value
                   ? 'bg-[rgb(var(--color-accent))] text-white'
                   : 'bg-tertiary text-secondary hover:bg-secondary'
@@ -82,7 +85,7 @@ export function CreateGroupPage() {
         </div>
 
         <div>
-          <label className="block text-xs text-muted mb-1">Group name *</label>
+          <label className="text-muted mb-1 block text-xs">Group name *</label>
           <input
             type="text"
             value={name}
@@ -95,7 +98,7 @@ export function CreateGroupPage() {
         </div>
 
         <div>
-          <label className="block text-xs text-muted mb-1">Description (optional)</label>
+          <label className="text-muted mb-1 block text-xs">Description (optional)</label>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -106,9 +109,13 @@ export function CreateGroupPage() {
           />
         </div>
 
-        <div className="rounded-lg p-3 bg-tertiary">
-          <p className="text-xs text-muted">Currency: <span className="font-medium text-primary">₹ INR</span></p>
-          <p className="text-xs text-muted mt-1">You can invite members after creating the group.</p>
+        <div className="bg-tertiary rounded-lg p-3">
+          <p className="text-muted text-xs">
+            Currency: <span className="text-primary font-medium">₹ INR</span>
+          </p>
+          <p className="text-muted mt-1 text-xs">
+            You can invite members after creating the group.
+          </p>
         </div>
 
         <button

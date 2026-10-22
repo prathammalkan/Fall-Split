@@ -8,8 +8,11 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
+      // Inject exactly one registration script; the app does not register the
+      // same service worker manually from its entry point.
+      injectRegister: 'script',
       workbox: {
+        sourcemap: false,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2}'],
         runtimeCaching: [
           {
@@ -70,7 +73,7 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
-    sourcemap: true,
+    sourcemap: false,
     rollupOptions: {
       output: {
         // manualChunks must be a function in Vite 8 / rolldown

@@ -20,7 +20,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:coverage": "vitest run --coverage",
-    "db:migrate": "supabase db push",
+    "db:migration:list": "supabase migration list --linked",
+    "db:migrate": "supabase db push --linked --dry-run",
     "db:reset": "supabase db reset",
     "db:types": "supabase gen types typescript --local > src/types/database.types.ts",
     "supabase:start": "supabase start",
@@ -28,19 +29,16 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.2",
-    "@supabase/auth-helpers-react": "^0.15.0",
     "@supabase/supabase-js": "^2.118.0",
     "date-fns": "^4.4.0",
     "decimal.js": "^10.6.0",
     "idb": "^8.0.4",
     "lucide-react": "^1.59.0",
-    "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-hook-form": "^7.90.0",
     "react-qr-code": "^2.2.0",
     "react-router-dom": "^7.18.4",
-    "workbox-window": "^7.4.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -51,7 +49,6 @@
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.8",
     "@types/node": "^24.13.3",
-    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@typescript-eslint/eslint-plugin": "^8.71.2",
@@ -70,12 +67,13 @@
     "oxlint": "^1.81.0",
     "pg": "^8.23.1",
     "prettier": "^3.9.10",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "supabase": "2.121.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.72.0",
     "vite": "^8.3.0",
     "vite-plugin-pwa": "^2.0.0",
-    "vitest": "^5.0.5",
-    "workbox-build": "^7.4.1"
+    "vitest": "^5.0.5"
   }
 }

@@ -15,45 +15,80 @@ export function NotificationsPage() {
 
   const load = useCallback(async () => {
     if (!user) return;
-    const { data } = await supabase.from('notifications').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50);
+    const { data } = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
     setNotifications(data ?? []);
     setLoading(false);
   }, [user]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const markAllRead = async () => {
     if (!user) return;
-    await db.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', user.id).is('read_at', null);
+    await db
+      .from('notifications')
+      .update({ read_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .is('read_at', null);
     void load();
   };
 
   const markRead = async (id: string) => {
-    await db.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id).is('read_at', null);
-    setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, read_at: new Date().toISOString() } : n));
+    await db
+      .from('notifications')
+      .update({ read_at: new Date().toISOString() })
+      .eq('id', id)
+      .is('read_at', null);
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n))
+    );
   };
 
   const hasUnread = notifications.some((n) => !n.read_at);
 
   return (
     <div>
-      <PageHeader title="Notifications" back actions={hasUnread ? (
-        <button onClick={() => void markAllRead()} className="btn-ghost text-sm"><Check size={16} /> Mark all read</button>
-      ) : null} />
+      <PageHeader
+        title="Notifications"
+        back
+        actions={
+          hasUnread ? (
+            <button onClick={() => void markAllRead()} className="btn-ghost text-sm">
+              <Check size={16} /> Mark all read
+            </button>
+          ) : null
+        }
+      />
       <div className="page-content pt-4">
         {loading ? (
-          <div className="flex justify-center py-8"><Spinner size={24} /></div>
+          <div className="flex justify-center py-8">
+            <Spinner size={24} />
+          </div>
         ) : notifications.length === 0 ? (
           <EmptyState icon={Bell} title="No notifications" description="You're all caught up" />
         ) : (
-          <div className="card p-0 overflow-hidden">
+          <div className="card overflow-hidden p-0">
             {notifications.map((n) => (
-              <button key={n.id} onClick={() => void markRead(n.id)} className={`list-item text-left w-full ${!n.read_at ? 'bg-[rgb(var(--color-accent)/0.05)]' : ''}`}>
-                {!n.read_at && <div className="w-2 h-2 rounded-full bg-[rgb(var(--color-accent))] flex-shrink-0" />}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-primary">{n.title}</p>
-                  <p className="text-xs text-secondary">{n.body}</p>
-                  <p className="text-xs text-muted mt-0.5">{format(new Date(n.created_at), 'MMM d, h:mm a')}</p>
+              <button
+                key={n.id}
+                onClick={() => void markRead(n.id)}
+                className={`list-item w-full text-left ${!n.read_at ? 'bg-[rgb(var(--color-accent)/0.05)]' : ''}`}
+              >
+                {!n.read_at && (
+                  <div className="h-2 w-2 flex-shrink-0 rounded-full bg-[rgb(var(--color-accent))]" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-primary text-sm font-medium">{n.title}</p>
+                  <p className="text-secondary text-xs">{n.body}</p>
+                  <p className="text-muted mt-0.5 text-xs">
+                    {format(new Date(n.created_at), 'MMM d, h:mm a')}
+                  </p>
                 </div>
               </button>
             ))}

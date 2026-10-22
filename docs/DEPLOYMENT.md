@@ -26,6 +26,7 @@ Fall Split is configured for zero-configuration Vercel deployment.
 
 - **SPA rewrite**: all routes redirect to `index.html` so client-side routing works.
 - **Security headers**: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`.
+- **Content security**: a restrictive Content-Security-Policy allows the app, Supabase API/WebSockets, and Google Fonts.
 - **Asset caching**: `/assets/*` files are cached immutably for 1 year (content-hashed filenames).
 - **Service worker**: `sw.js` served with `no-cache` and `Service-Worker-Allowed: /`.
 - **PWA manifest**: `manifest.json` served with correct MIME type.
@@ -104,7 +105,7 @@ server {
 The `.github/workflows/ci.yml` pipeline runs on every push and PR:
 
 1. **Type-check** — `tsc --noEmit`
-2. **Lint** — ESLint (non-blocking)
+2. **Lint** — ESLint (blocking)
 3. **Unit tests** — Vitest
 4. **Build** — Vite production build
 5. **Upload artifact** — `dist/` kept for 7 days

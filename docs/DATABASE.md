@@ -12,7 +12,7 @@ User profile data. One row per authenticated user.
 
 | Column | Type | Description |
 |---|---|---|
-| `id` | `uuid` | References `auth.users.id` |
+| `id` | `uuid` | Auth identity on creation; retained as a pseudonymous ledger key after account closure |
 | `username` | `text` | Unique, lowercase, 3–30 chars |
 | `display_name` | `text` | Up to 60 chars |
 | `avatar_url` | `text?` | Public URL |
@@ -211,7 +211,17 @@ requires authentication and server-side token validation.
 | `009_settlement_integrity.sql` | Atomic debt-validated settlement lifecycle |
 | `010_invitation_preview.sql` | Safe pre-auth invitation preview and token privacy |
 | `011_group_balance_membership_guard.sql` | Group membership enforcement in balance RPC |
+| `012_security_definer_hardening.sql` | Security-definer search paths and grants |
+| `013_security_financial_reconciliation.sql` | Caller-bound helpers, financial reconciliation, and balance RPCs |
+| `014_active_account_enforcement.sql` | Active-account RLS and write enforcement |
+| `015_relationship_authorization.sql` | Friend-request and group-invitation authorization |
+| `016_atomic_expense_creation.sql` | Idempotent atomic expense, payer, and share writes |
+| `017_fix_expense_participant_visibility.sql` | Bind participant visibility to the outer expense |
+| `018_atomic_itemized_expense_creation.sql` | Atomic itemized records and retry reconciliation |
+| `20261021223159_preserve_anonymized_ledger_identity.sql` | Detach Auth identity deletion from retained pseudonymized ledger profiles |
+| `20261021225434_revoke_excessive_app_table_privileges.sql` | Remove anonymous table access and RLS-bypassing table privileges |
 
-Apply migrations in numeric order to the intended Supabase project. These
-migrations were not applied to a local database as Supabase CLI and Docker were
-unavailable in the current environment.
+Apply migrations only through the supported Supabase CLI workflow after
+reconciling existing migration history, verifying a recoverable backup, and
+obtaining required authorization. The custom migration runner and SQL Editor
+are not supported ways to replay this chain.

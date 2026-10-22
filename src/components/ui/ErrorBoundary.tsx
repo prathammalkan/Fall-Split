@@ -23,8 +23,7 @@ export class ErrorBoundary extends Component<Props, State> {
   state: State = { hasError: false, message: '' };
 
   static getDerivedStateFromError(error: unknown): State {
-    const message =
-      error instanceof Error ? error.message : String(error ?? 'Unknown error');
+    const message = error instanceof Error ? error.message : String(error ?? 'Unknown error');
     return { hasError: true, message };
   }
 
@@ -42,20 +41,20 @@ export class ErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
 
       return (
-        <div className="min-h-screen flex items-center justify-center p-6">
-          <div className="card max-w-sm w-full text-center space-y-4">
+        <div className="flex min-h-screen items-center justify-center p-6">
+          <div className="card w-full max-w-sm space-y-4 text-center">
             <div className="flex justify-center">
-              <div className="w-14 h-14 rounded-2xl bg-red-50 dark:bg-red-950 flex items-center justify-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 dark:bg-red-950">
                 <AlertTriangle size={28} className="text-red-500" />
               </div>
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-primary">Something went wrong</h2>
-              <p className="text-sm text-muted mt-1">
+              <h2 className="text-primary text-lg font-semibold">Something went wrong</h2>
+              <p className="text-muted mt-1 text-sm">
                 An unexpected error occurred. Your data is safe.
               </p>
               {import.meta.env.DEV && this.state.message && (
-                <p className="text-xs text-red-500 mt-2 font-mono break-all">
+                <p className="mt-2 font-mono text-xs break-all text-red-500">
                   {this.state.message}
                 </p>
               )}

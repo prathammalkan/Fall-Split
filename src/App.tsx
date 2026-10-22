@@ -29,6 +29,7 @@ import { InvitePage } from './pages/app/InvitePage';
 import { CreateGroupPage } from './pages/app/CreateGroupPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { LoadingScreen } from './components/ui/LoadingScreen';
+import { PrivacyPage, SupportPage, TermsPage } from './pages/legal/LegalPages';
 
 export default function App() {
   const { session, loading } = useAuth();
@@ -46,6 +47,9 @@ export default function App() {
           <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/auth/callback" element={<AuthCallbackPage />} />
           <Route path="/invite/:token" element={<InvitePage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/support" element={<SupportPage />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </ErrorBoundary>
@@ -55,27 +59,30 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppShell>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/friends" element={<FriendsPage />} />
-        <Route path="/friends/:userId" element={<FriendDetailPage />} />
-        <Route path="/groups" element={<GroupsPage />} />
-        <Route path="/groups/new" element={<CreateGroupPage />} />
-        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
-        <Route path="/activity" element={<ActivityPage />} />
-        <Route path="/profile" element={<ProfilePage />} />
-        <Route path="/expenses/new" element={<AddExpensePage />} />
-        <Route path="/expenses/:expenseId" element={<ExpenseDetailPage />} />
-        <Route path="/expenses/:expenseId/edit" element={<EditExpensePage />} />
-        <Route path="/settlements" element={<SettlementsPage />} />
-        <Route path="/notifications" element={<NotificationsPage />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/invite/:token" element={<InvitePage />} />
-        <Route path="/auth/callback" element={<AuthCallbackPage />} />
-        <Route path="/verify-email" element={<VerifyEmailPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Routes>
-    </AppShell>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/friends" element={<FriendsPage />} />
+          <Route path="/friends/:userId" element={<FriendDetailPage />} />
+          <Route path="/groups" element={<GroupsPage />} />
+          <Route path="/groups/new" element={<CreateGroupPage />} />
+          <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+          <Route path="/activity" element={<ActivityPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/expenses/new" element={<AddExpensePage />} />
+          <Route path="/expenses/:expenseId" element={<ExpenseDetailPage />} />
+          <Route path="/expenses/:expenseId/edit" element={<EditExpensePage />} />
+          <Route path="/settlements" element={<SettlementsPage />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/invite/:token" element={<InvitePage />} />
+          <Route path="/auth/callback" element={<AuthCallbackPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/support" element={<SupportPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </AppShell>
     </ErrorBoundary>
   );
 }

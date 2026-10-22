@@ -18,11 +18,7 @@ export function Logo({ size = 32, className = '', showText = false }: LogoProps)
         role="img"
       >
         {/* Angular lightning bolt / split shape */}
-        <path
-          d="M18 2L4 18H14L14 30L28 14H18L18 2Z"
-          fill="rgb(249 115 22)"
-          stroke="none"
-        />
+        <path d="M18 2L4 18H14L14 30L28 14H18L18 2Z" fill="rgb(249 115 22)" stroke="none" />
         {/* Sharp accent line */}
         <path
           d="M22 8L28 14"

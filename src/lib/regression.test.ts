@@ -58,8 +58,7 @@ describe('B10 — CSV injection escaping regex', () => {
 // The original code had shareAmt - payerAmt (inverted sign).
 // ---------------------------------------------------------------------------
 describe('B4 — Expense detail net sign for payer', () => {
-  const computeNetPaise = (payerAmt: number, shareAmt: number) =>
-    payerAmt - shareAmt; // fixed formula
+  const computeNetPaise = (payerAmt: number, shareAmt: number) => payerAmt - shareAmt; // fixed formula
 
   it('payer who overpaid has positive net (owed back)', () => {
     // A pays ₹100 for a ₹40 share → net = +₹60 (they are owed ₹60)
