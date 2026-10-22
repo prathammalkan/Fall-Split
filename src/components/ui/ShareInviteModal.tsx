@@ -4,6 +4,7 @@ import QRCode from 'react-qr-code';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../lib/supabase';
 import { Spinner } from './Spinner';
+import { getInviteUrl } from '../../lib/inviteUrl';
 
 interface ShareInviteModalProps {
   onClose: () => void;
@@ -17,17 +18,31 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [copyFallback, setCopyFallback] = useState(false);
 
   const generateLink = async () => {
     if (!user) return;
     setGenerating(true);
     setGenError(null);
-    // Generate a cryptographically random 64-character hex token
+    let invitationUrl: string;
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
     const token = Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
+    try {
+      invitationUrl = getInviteUrl(
+        token,
+        import.meta.env['VITE_APP_URL'] as string | undefined,
+        window.location.origin,
+        import.meta.env.PROD
+      );
+    } catch (error) {
+      setGenerating(false);
+      setGenError(error instanceof Error ? error.message : 'Configure VITE_APP_URL first.');
+      return;
+    }
+    // Generate a cryptographically random 64-character hex token
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const { error } = await db.from('invitation_tokens').insert({
       token,
@@ -42,9 +57,7 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
       setGenError('Could not generate invite link. Please try again.');
       return;
     }
-    const appUrl =
-      (import.meta.env['VITE_APP_URL'] as string | undefined) || window.location.origin;
-    setInviteUrl(`${appUrl}/invite/${token}`);
+    setInviteUrl(invitationUrl);
   };
 
   const copyLink = async () => {
@@ -54,7 +67,13 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback: select the input text
+      const input = document.querySelector<HTMLInputElement>(
+        '[role="dialog"] input[aria-label="Invite link"]'
+      );
+      input?.focus();
+      input?.select();
+      setCopyFallback(true);
+      setTimeout(() => setCopyFallback(false), 4000);
     }
   };
 
@@ -67,7 +86,8 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
           text: 'Use this link to connect with me on Fall Split!',
           url: inviteUrl,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
         // User cancelled share — no action needed
       }
     } else {
@@ -133,17 +153,27 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
           <div className="space-y-4">
             {/* QR Code */}
             <div className="flex flex-col items-center gap-2">
-              <div
-                className="flex justify-center rounded-xl bg-white p-4"
-                aria-label="Invite QR code — scan with your phone camera"
-              >
+              <div className="flex justify-center rounded-xl bg-white p-4">
                 <QRCode value={inviteUrl} size={180} />
               </div>
+              <p className="sr-only" role="status">
+                QR code encodes the invitation link shown below.
+              </p>
               <div className="flex items-center gap-1.5">
                 <Camera size={14} className="text-muted" />
                 <p className="text-muted text-xs">Scan with your phone camera to connect</p>
               </div>
             </div>
+            {copied && (
+              <p className="text-center text-sm text-[rgb(var(--color-positive))]" role="status">
+                Link copied.
+              </p>
+            )}
+            {copyFallback && (
+              <p className="text-center text-sm text-[rgb(var(--color-pending))]" role="status">
+                Clipboard unavailable. The link is selected; copy it manually.
+              </p>
+            )}
 
             {/* Copyable link */}
             <div className="flex gap-2">

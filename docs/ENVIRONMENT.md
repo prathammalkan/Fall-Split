@@ -13,7 +13,7 @@ All environment variables used by Fall Split are prefixed `VITE_` (exposed to th
 
 | Variable | Description | Default |
 |---|---|---|
-| `VITE_APP_URL` | Canonical URL of the deployed app. Used in shareable invite links and QR codes. | `http://localhost:5173` |
+| `VITE_APP_URL` | Public app origin used by shareable invitation links and QR codes. Required in production and for preview deployments; production must use HTTPS. | Empty locally (uses the current localhost development origin) |
 | `VITE_APP_NAME` | Application name override | `Fall Split` |
 
 ## Variables That Must NEVER Appear in VITE_ Prefix
