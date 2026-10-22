@@ -3,9 +3,10 @@ import { AlertCircle } from 'lucide-react';
 interface ErrorMessageProps {
   message: string;
   retry?: () => void;
+  retryDisabled?: boolean;
 }
 
-export function ErrorMessage({ message, retry }: ErrorMessageProps) {
+export function ErrorMessage({ message, retry, retryDisabled = false }: ErrorMessageProps) {
   return (
     <div
       role="alert"
@@ -17,6 +18,7 @@ export function ErrorMessage({ message, retry }: ErrorMessageProps) {
         {retry && (
           <button
             onClick={retry}
+            disabled={retryDisabled}
             className="mt-1 text-sm font-medium text-[rgb(var(--color-negative))] underline"
           >
             Try again

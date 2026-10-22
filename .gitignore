@@ -58,3 +58,10 @@ blob-report/
 # Temporary
 *.tmp
 *.temp
+
+# Agent / assistant local tooling
+.agents/
+.claude/
+agent/
+.unlazy/
+skills-lock.json
