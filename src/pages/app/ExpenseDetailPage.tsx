@@ -300,7 +300,8 @@ export function ExpenseDetailPage() {
               Delete &ldquo;{expense.title}&rdquo; ({formatINR(expense.amount_paise)})?
             </p>
             <p id="delete-dialog-desc" className="text-muted mb-4 text-xs">
-              This will permanently delete this expense and update all participant balances. This action cannot be undone. Confirmed settlements will not be affected.
+              This will permanently delete this expense and update all participant balances. This
+              action cannot be undone. Confirmed settlements will not be affected.
             </p>
             <div className="flex gap-3">
               <button
@@ -314,7 +315,7 @@ export function ExpenseDetailPage() {
               <button
                 type="button"
                 onClick={() => void handleDelete()}
-                className="btn-danger flex-1 inline-flex items-center justify-center gap-2"
+                className="btn-danger inline-flex flex-1 items-center justify-center gap-2"
                 disabled={deleting}
               >
                 {deleting ? <Spinner size={16} /> : <Trash2 size={16} />}
