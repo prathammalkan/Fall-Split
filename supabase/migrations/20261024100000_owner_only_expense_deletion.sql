@@ -42,7 +42,40 @@ BEGIN
     RAISE EXCEPTION 'Expense is already deleted' USING ERRCODE = '22023';
   END IF;
 
-  -- 5. Financial dependency check: verify no pending settlements between participants
+  -- 5. Acquire pair advisory locks first (consistent lock ordering with update_expense_with_records and settlement RPCs)
+  FOR v_pair_key IN
+    SELECT DISTINCT
+      LEAST(payer.user_id::TEXT, share.user_id::TEXT) || ':' ||
+      GREATEST(payer.user_id::TEXT, share.user_id::TEXT) AS pair_key
+    FROM public.expense_payers AS payer
+    CROSS JOIN public.expense_shares AS share
+    WHERE payer.expense_id = p_expense_id
+      AND share.expense_id = p_expense_id
+      AND payer.user_id <> share.user_id
+    ORDER BY pair_key
+  LOOP
+    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_pair_key, 0));
+  END LOOP;
+
+  -- 6. Lock the expense row for update after pair locks are acquired
+  SELECT * INTO v_expense
+  FROM public.expenses AS expense
+  WHERE expense.id = p_expense_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_expense.creator_id <> v_user_id THEN
+    RAISE EXCEPTION 'Only the expense creator may delete this expense' USING ERRCODE = '42501';
+  END IF;
+
+  IF v_expense.status = 'deleted' THEN
+    RAISE EXCEPTION 'Expense is already deleted' USING ERRCODE = '22023';
+  END IF;
+
+  -- 7. Financial dependency check: verify no pending settlements between participants while holding locks
   IF EXISTS (
     SELECT 1
     FROM public.settlements AS s
@@ -58,31 +91,6 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Cannot delete expense while a related settlement is pending confirmation'
       USING ERRCODE = '22023';
-  END IF;
-
-  -- 6. Acquire pair advisory locks (same order as update_expense_with_records and settlement RPCs)
-  FOR v_pair_key IN
-    SELECT DISTINCT
-      LEAST(payer.user_id::TEXT, share.user_id::TEXT) || ':' ||
-      GREATEST(payer.user_id::TEXT, share.user_id::TEXT) AS pair_key
-    FROM public.expense_payers AS payer
-    CROSS JOIN public.expense_shares AS share
-    WHERE payer.expense_id = p_expense_id
-      AND share.expense_id = p_expense_id
-      AND payer.user_id <> share.user_id
-    ORDER BY pair_key
-  LOOP
-    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_pair_key, 0));
-  END LOOP;
-
-  -- 7. Lock the expense row for update
-  SELECT * INTO v_expense
-  FROM public.expenses AS expense
-  WHERE expense.id = p_expense_id
-  FOR UPDATE;
-
-  IF v_expense.status = 'deleted' THEN
-    RAISE EXCEPTION 'Expense is already deleted' USING ERRCODE = '22023';
   END IF;
 
   -- 8. Record audit trail in expense_history

@@ -41,12 +41,25 @@ describe('Owner-only expense deletion migration', () => {
   it('acquires pair advisory locks and row locks before mutation to prevent race conditions', () => {
     expect(migration).toContain('pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_pair_key, 0))');
     expect(migration).toContain('FOR UPDATE');
+
+    const advisoryLockIndex = migration.indexOf('pg_catalog.pg_advisory_xact_lock');
+    const settlementCheckIndex = migration.indexOf("s.status IN ('proposed', 'pending')");
+    const updateIndex = migration.indexOf('UPDATE public.expenses');
+
+    expect(advisoryLockIndex).toBeGreaterThan(-1);
+    expect(settlementCheckIndex).toBeGreaterThan(advisoryLockIndex);
+    expect(updateIndex).toBeGreaterThan(settlementCheckIndex);
   });
 
   it('records audit history before updating expense status', () => {
     expect(migration).toContain('INSERT INTO public.expense_history');
     expect(migration).toContain("'deleted'");
-    expect(migration).toContain("pg_catalog.jsonb_build_object(\n      'status', 'deleted'\n    )");
+    expect(migration).toMatch(/pg_catalog\.jsonb_build_object\s*\(\s*'status',\s*'deleted'\s*\)/);
+
+    const historyIndex = migration.indexOf('INSERT INTO public.expense_history');
+    const updateIndex = migration.indexOf('UPDATE public.expenses');
+    expect(historyIndex).toBeGreaterThan(-1);
+    expect(updateIndex).toBeGreaterThan(historyIndex);
   });
 
   it('marks expense status as deleted and clears child records to prevent orphans', () => {
