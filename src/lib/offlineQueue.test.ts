@@ -2,6 +2,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearOperationsForUser,
+  removeOperationsForExpense,
   getAllOperations,
   getPendingOperations,
   queueOfflineOperation,
@@ -316,5 +317,18 @@ describe('offlineQueue', () => {
     const operations = await getAllOperations();
     expect(operations).toHaveLength(1);
     expect(operations[0]?.payload).toMatchObject({ creator_id: 'user-2' });
+  });
+
+  it('removes offline operations associated with a deleted expense', async () => {
+    const op1 = await queuePayload('expense-key-1');
+    const op2 = await queuePayload('expense-key-2');
+    await updateOperationState(op1.id, 'synced', { serverId: 'server-expense-1' });
+
+    // Remove server-expense-1
+    await removeOperationsForExpense('server-expense-1', 'user-1');
+
+    const remaining = await getAllOperations();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.id).toBe(op2.id);
   });
 });

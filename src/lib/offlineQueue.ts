@@ -67,6 +67,34 @@ export async function clearOperationsForUser(userId: string): Promise<void> {
   await tx.done;
 }
 
+export async function removeOperationsForExpense(
+  expenseId: string,
+  userId?: string
+): Promise<void> {
+  if (!expenseId) return;
+  const db = await getDB();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const store = tx.objectStore(STORE_NAME);
+  const operations = await store.getAll();
+  const deletions = operations
+    .filter((op) => {
+      if (userId && getOperationOwnerId(op) !== userId) return false;
+      if (op.serverId === expenseId) return true;
+      if (
+        typeof op.payload === 'object' &&
+        op.payload !== null &&
+        'id' in op.payload &&
+        (op.payload as { id: unknown }).id === expenseId
+      ) {
+        return true;
+      }
+      return false;
+    })
+    .map((op) => store.delete(op.id));
+  await Promise.all(deletions);
+  await tx.done;
+}
+
 export async function getOperationByIdempotencyKey(
   idempotencyKey: string,
   userId: string
