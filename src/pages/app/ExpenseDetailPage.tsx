@@ -4,6 +4,7 @@ import { Edit3, Trash2, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
+import { removeOperationsForExpense } from '../../lib/offlineQueue';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
@@ -49,13 +50,15 @@ export function ExpenseDetailPage() {
   const navigate = useNavigate();
   const [expense, setExpense] = useState<ExpenseData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const load = useCallback(async () => {
     if (!expenseId) return;
     setLoading(true);
+    setLoadError(null);
     try {
       const { data, error: err } = await supabase
         .from('expenses')
@@ -66,7 +69,7 @@ export function ExpenseDetailPage() {
         .neq('status', 'deleted')
         .single();
       if (err || !data) {
-        setError('Expense not found or access denied.');
+        setLoadError('Expense not found or access denied.');
         return;
       }
       setExpense(data as unknown as ExpenseData);
@@ -79,25 +82,31 @@ export function ExpenseDetailPage() {
     void load();
   }, [load]);
 
-  const handleVoid = async () => {
+  const handleDelete = async () => {
     if (!expense || !user) return;
     setDeleting(true);
-    const { error: voidErr } = await db
-      .from('expenses')
-      .update({
-        status: 'voided',
-        voided_at: new Date().toISOString(),
-        voided_by: user.id,
-        void_reason: 'Deleted by creator',
-      })
-      .eq('id', expense.id)
-      .eq('creator_id', user.id);
-    setDeleting(false);
-    if (voidErr) {
-      setError('Failed to delete expense.');
-      return;
+    setDeleteError(null);
+    try {
+      const { error: deleteErr } = await db.rpc('delete_expense', {
+        p_expense_id: expense.id,
+      });
+      if (deleteErr) {
+        setDeleteError(deleteErr.message || 'Failed to delete expense.');
+        setShowDeleteConfirm(false);
+        setDeleting(false);
+        return;
+      }
+      await removeOperationsForExpense(expense.id, user.id);
+      if (expense.group?.id) {
+        navigate(`/groups/${expense.group.id}`, { replace: true });
+      } else {
+        navigate(-1);
+      }
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete expense.');
+      setShowDeleteConfirm(false);
+      setDeleting(false);
     }
-    navigate(-1);
   };
 
   // Only allow edit/void if this user created the expense AND it's still active
@@ -109,10 +118,10 @@ export function ExpenseDetailPage() {
         <Spinner size={32} />
       </div>
     );
-  if (error)
+  if (loadError)
     return (
       <div className="p-4">
-        <ErrorMessage message={error} />
+        <ErrorMessage message={loadError} />
       </div>
     );
   if (!expense) return null;
@@ -159,6 +168,7 @@ export function ExpenseDetailPage() {
       />
 
       <div className="page-content space-y-4 pt-4">
+        {deleteError && <ErrorMessage message={deleteError} />}
         <div className="card">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
@@ -279,21 +289,36 @@ export function ExpenseDetailPage() {
         </p>
 
         {showDeleteConfirm && (
-          <div className="card border-[rgb(var(--color-negative)/0.3)]">
-            <p className="text-primary mb-2 text-sm font-semibold">Delete this expense?</p>
-            <p className="text-muted mb-4 text-xs">
-              This will void the expense. Confirmed settlements will not be affected.
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            aria-describedby="delete-dialog-desc"
+            className="card border-[rgb(var(--color-negative)/0.3)] bg-[rgb(var(--color-negative)/0.05)] p-4"
+          >
+            <p id="delete-dialog-title" className="text-primary mb-1 text-sm font-semibold">
+              Delete &ldquo;{expense.title}&rdquo; ({formatINR(expense.amount_paise)})?
+            </p>
+            <p id="delete-dialog-desc" className="text-muted mb-4 text-xs">
+              This will permanently delete this expense and update all participant balances. This action cannot be undone. Confirmed settlements will not be affected.
             </p>
             <div className="flex gap-3">
-              <button onClick={() => setShowDeleteConfirm(false)} className="btn-secondary flex-1">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className="btn-secondary flex-1"
+                disabled={deleting}
+              >
                 Cancel
               </button>
               <button
-                onClick={() => void handleVoid()}
-                className="btn-danger flex-1"
+                type="button"
+                onClick={() => void handleDelete()}
+                className="btn-danger flex-1 inline-flex items-center justify-center gap-2"
                 disabled={deleting}
               >
-                {deleting ? <Spinner size={16} /> : null}Delete
+                {deleting ? <Spinner size={16} /> : <Trash2 size={16} />}
+                {deleting ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>

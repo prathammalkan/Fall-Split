@@ -530,6 +530,10 @@ export type Database = {
         Args: { p_user_id: string; p_expense_id: string };
         Returns: boolean;
       };
+      delete_expense: {
+        Args: { p_expense_id: string };
+        Returns: string;
+      };
       accept_invitation: {
         Args: { p_token: string };
         Returns: {
