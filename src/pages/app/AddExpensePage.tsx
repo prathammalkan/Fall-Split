@@ -1,6 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Minus, X, ChevronDown, Calendar, Tag, StickyNote, Users } from 'lucide-react';
+import {
+  Plus,
+  Minus,
+  X,
+  ChevronDown,
+  Calendar,
+  Tag,
+  StickyNote,
+  Users,
+  CheckCircle2,
+} from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
 import {
@@ -93,6 +103,13 @@ export function AddExpensePage() {
   const [notes, setNotes] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const submissionKey = useRef<{ fingerprint: string; key: string } | null>(null);
+  const [submissionSuccess, setSubmissionSuccess] = useState<{
+    id: string;
+    title: string;
+    totalPaise: number;
+    userSharePaise: number;
+    isPendingApproval: boolean;
+  } | null>(null);
 
   const totalPaise = parseINR(amountStr) ?? 0;
 
@@ -449,7 +466,16 @@ export function AddExpensePage() {
         return;
       }
 
-      navigate(`/expenses/${expenseId}`, { replace: true });
+      const userShare = allocations?.find((a) => a.userId === user.id)?.amountPaise ?? 0;
+      const otherParticipants = participants.filter((p) => p.userId !== user.id);
+
+      setSubmissionSuccess({
+        id: expenseId,
+        title: title.trim(),
+        totalPaise,
+        userSharePaise: userShare,
+        isPendingApproval: otherParticipants.length > 0,
+      });
     } catch (saveError) {
       setError(
         saveError instanceof Error ? saveError.message : 'Expense could not be saved. Please retry.'
@@ -462,6 +488,49 @@ export function AddExpensePage() {
   const allocations = computeAllocations();
   const allocationSum = allocations?.reduce((a, b) => a + b.amountPaise, 0) ?? 0;
   const reconciled = allocations !== null && allocationSum === totalPaise;
+
+  if (submissionSuccess) {
+    return (
+      <SheetDialog title="Expense submitted" onClose={() => navigate('/', { replace: true })}>
+        <div className="p-6 text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[rgb(var(--color-primary)/0.12)] text-[rgb(var(--color-primary))]">
+            <CheckCircle2 size={32} />
+          </div>
+          <h2 className="text-primary text-xl font-bold">Expense submitted</h2>
+          <p className="text-secondary mt-2 text-base font-semibold">
+            {submissionSuccess.title} — {formatINR(submissionSuccess.totalPaise)}
+          </p>
+          <p className="text-muted mt-1 text-sm">
+            Your share — {formatINR(submissionSuccess.userSharePaise)}
+          </p>
+          <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[rgb(var(--color-pending)/0.15)] px-3 py-1 text-xs font-medium text-[rgb(var(--color-pending))]">
+            Status — {submissionSuccess.isPendingApproval ? 'Pending Approval' : 'Confirmed'}
+          </div>
+          <p className="text-secondary mt-3 text-sm">
+            {submissionSuccess.isPendingApproval
+              ? 'Waiting for the other required participants to approve.'
+              : 'All required participants have approved this expense.'}
+          </p>
+          <div className="mt-6 flex flex-col gap-2.5 sm:flex-row sm:justify-center">
+            <button
+              type="button"
+              onClick={() => navigate(`/expenses/${submissionSuccess.id}`, { replace: true })}
+              className="btn-primary w-full px-6 py-2.5 text-sm font-medium sm:w-auto"
+            >
+              View Expense
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/', { replace: true })}
+              className="btn-secondary w-full px-6 py-2.5 text-sm font-medium sm:w-auto"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </SheetDialog>
+    );
+  }
 
   if (step === 'basic') {
     return (

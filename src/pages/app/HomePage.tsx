@@ -9,11 +9,17 @@ import {
   ArrowDownLeft,
   RefreshCw,
   Handshake,
+  Clock,
+  AlertTriangle,
+  CheckCircle2,
+  Check,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { supabase } from '../../lib/supabase';
+import { supabase, db } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { Avatar } from '../../components/ui/Avatar';
+import { Spinner } from '../../components/ui/Spinner';
 import { LogoFull } from '../../components/brand/Logo';
 import type { Profile } from '../../types';
 
@@ -31,6 +37,44 @@ interface HomeData {
   owedToYou: FriendBalance[]; // positive netPaise: they owe you
 }
 
+// Requirement E: Pending Action items
+interface PendingApprovalExpense {
+  id: string;
+  title: string;
+  amount_paise: number;
+  creator_name: string;
+  created_at: string;
+}
+
+interface SubmittedAwaitingExpense {
+  id: string;
+  title: string;
+  amount_paise: number;
+  approved_count: number;
+  total_participants: number;
+  created_at: string;
+}
+
+interface DisputedExpenseItem {
+  id: string;
+  title: string;
+  amount_paise: number;
+  dispute_category: string | null;
+  dispute_reason: string | null;
+  created_at: string;
+}
+
+interface PendingSettlementNotice {
+  id: string;
+  payer_id: string;
+  payer_name: string;
+  recipient_id: string;
+  recipient_name: string;
+  amount_paise: number;
+  created_at: string;
+  type: 'incoming' | 'outgoing';
+}
+
 type LoadState = 'loading' | 'loaded' | 'error' | 'empty';
 
 export function HomePage() {
@@ -41,10 +85,18 @@ export function HomePage() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
+  // Requirement E state
+  const [awaitingMyApproval, setAwaitingMyApproval] = useState<PendingApprovalExpense[]>([]);
+  const [submittedAwaiting, setSubmittedAwaiting] = useState<SubmittedAwaitingExpense[]>([]);
+  const [disputedExpenses, setDisputedExpenses] = useState<DisputedExpenseItem[]>([]);
+  const [pendingSettlements, setPendingSettlements] = useState<PendingSettlementNotice[]>([]);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+
   const loadHomeData = useCallback(async () => {
     if (!user) return;
     setLoadState('loading');
     try {
+      // 1. Load confirmed balances
       const { data: balances, error: rpcError } = await supabase.rpc('get_friend_balances');
       if (rpcError) throw rpcError;
 
@@ -52,64 +104,225 @@ export function HomePage() {
 
       if (rawBalances.length === 0) {
         setData({ netPaise: 0, owedToPaise: 0, owingPaise: 0, youOwe: [], owedToYou: [] });
-        setLoadState('empty');
-        return;
-      }
-
-      const otherIds = rawBalances.map((b) => b.other_user_id);
-      const { data: profileData, error: profileError } = await supabase
-        .from('discoverable_profiles')
-        .select('id, username, display_name, avatar_url')
-        .in('id', otherIds);
-      if (profileError) throw profileError;
-      const profiles = (profileData ?? []) as unknown as Profile[];
-      const missingProfileIds = otherIds.filter(
-        (id) => !profiles.some((profile) => profile.id === id)
-      );
-      if (missingProfileIds.length > 0) {
-        // Soft-deleted or missing profiles are intentionally excluded from the current
-        // balance view rather than crashing the whole dashboard.
-        rawBalances = rawBalances.filter(
-          (balance) => !missingProfileIds.includes(balance.other_user_id)
+      } else {
+        const otherIds = rawBalances.map((b) => b.other_user_id);
+        const { data: profileData, error: profileError } = await supabase
+          .from('discoverable_profiles')
+          .select('id, username, display_name, avatar_url')
+          .in('id', otherIds);
+        if (profileError) throw profileError;
+        const profiles = (profileData ?? []) as unknown as Profile[];
+        const missingProfileIds = otherIds.filter(
+          (id) => !profiles.some((profile) => profile.id === id)
         );
-      }
-
-      let owedToPaise = 0;
-      let owingPaise = 0;
-      const youOwe: FriendBalance[] = [];
-      const owedToYou: FriendBalance[] = [];
-
-      for (const b of rawBalances) {
-        if (Math.abs(b.net_paise) < 1) continue; // ignore sub-paise noise
-        const prof = profiles.find((p) => p.id === b.other_user_id);
-        if (!prof) continue;
-
-        const entry: FriendBalance = {
-          userId: b.other_user_id,
-          profile: prof,
-          netPaise: b.net_paise,
-        };
-
-        if (b.net_paise > 0) {
-          owedToPaise += b.net_paise;
-          owedToYou.push(entry);
-        } else {
-          owingPaise += Math.abs(b.net_paise);
-          youOwe.push(entry);
+        if (missingProfileIds.length > 0) {
+          rawBalances = rawBalances.filter(
+            (balance) => !missingProfileIds.includes(balance.other_user_id)
+          );
         }
+
+        let owedToPaise = 0;
+        let owingPaise = 0;
+        const youOwe: FriendBalance[] = [];
+        const owedToYou: FriendBalance[] = [];
+
+        for (const b of rawBalances) {
+          if (Math.abs(b.net_paise) < 1) continue;
+          const prof = profiles.find((p) => p.id === b.other_user_id);
+          if (!prof) continue;
+
+          const entry: FriendBalance = {
+            userId: b.other_user_id,
+            profile: prof,
+            netPaise: b.net_paise,
+          };
+
+          if (b.net_paise > 0) {
+            owedToPaise += b.net_paise;
+            owedToYou.push(entry);
+          } else {
+            owingPaise += Math.abs(b.net_paise);
+            youOwe.push(entry);
+          }
+        }
+
+        owedToYou.sort((a, b) => b.netPaise - a.netPaise);
+        youOwe.sort((a, b) => Math.abs(b.netPaise) - Math.abs(a.netPaise));
+
+        setData({
+          netPaise: owedToPaise - owingPaise,
+          owedToPaise,
+          owingPaise,
+          youOwe: youOwe.slice(0, 5),
+          owedToYou: owedToYou.slice(0, 5),
+        });
       }
 
-      // Sort by absolute amount descending for priority display
-      owedToYou.sort((a, b) => b.netPaise - a.netPaise);
-      youOwe.sort((a, b) => Math.abs(b.netPaise) - Math.abs(a.netPaise));
+      // 2. Requirement E: Query pending actions
+      // A. Pending Settlements
+      try {
+        const { data: rawSettlements } = await supabase
+          .from('settlements')
+          .select(
+            `
+            id, payer_id, recipient_id, amount_paise, created_at, status,
+            payer:payer_id (display_name),
+            recipient:recipient_id (display_name)
+          `
+          )
+          .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
+          .in('status', ['proposed', 'pending'])
+          .order('created_at', { ascending: false });
 
-      setData({
-        netPaise: owedToPaise - owingPaise,
-        owedToPaise,
-        owingPaise,
-        youOwe: youOwe.slice(0, 5),
-        owedToYou: owedToYou.slice(0, 5),
-      });
+        if (rawSettlements) {
+          interface RawSettlementRow {
+            id: string;
+            payer_id: string;
+            recipient_id: string;
+            amount_paise: number;
+            created_at: string;
+            payer: { display_name: string } | null;
+            recipient: { display_name: string } | null;
+          }
+          const sRows = rawSettlements as unknown as RawSettlementRow[];
+          setPendingSettlements(
+            sRows.map((s) => ({
+              id: s.id,
+              payer_id: s.payer_id,
+              payer_name: s.payer?.display_name ?? 'Friend',
+              recipient_id: s.recipient_id,
+              recipient_name: s.recipient?.display_name ?? 'Friend',
+              amount_paise: s.amount_paise,
+              created_at: s.created_at,
+              type: s.recipient_id === user.id ? 'incoming' : 'outgoing',
+            }))
+          );
+        }
+      } catch {
+        setPendingSettlements([]);
+      }
+
+      // B. Expenses awaiting my approval
+      try {
+        const { data: myApprovals } = await supabase
+          .from('expense_approvals')
+          .select(
+            `
+            id, expense_id, status, created_at,
+            expenses (
+              id, title, amount_paise, creator_id,
+              creator:creator_id (display_name)
+            )
+          `
+          )
+          .eq('user_id', user.id)
+          .eq('status', 'pending');
+
+        if (myApprovals) {
+          interface RawApprovalJoin {
+            id: string;
+            expense_id: string;
+            status: string;
+            created_at: string;
+            expenses: {
+              id: string;
+              title: string;
+              amount_paise: number;
+              creator_id: string;
+              creator: { display_name: string } | null;
+            } | null;
+          }
+          const appRows = myApprovals as unknown as RawApprovalJoin[];
+          setAwaitingMyApproval(
+            appRows
+              .filter((a) => a.expenses != null)
+              .map((a) => ({
+                id: a.expenses!.id,
+                title: a.expenses!.title,
+                amount_paise: a.expenses!.amount_paise,
+                creator_name: a.expenses!.creator?.display_name ?? 'Friend',
+                created_at: a.created_at,
+              }))
+          );
+        }
+      } catch {
+        setAwaitingMyApproval([]);
+      }
+
+      // C. Expenses submitted by me awaiting others
+      try {
+        const { data: mySubmitted } = await supabase
+          .from('expenses')
+          .select(
+            `
+            id, title, amount_paise, created_at, status,
+            approvals:expense_approvals (id, status)
+          `
+          )
+          .eq('creator_id', user.id)
+          .eq('status', 'pending_approval');
+
+        if (mySubmitted) {
+          interface RawSubmittedRow {
+            id: string;
+            title: string;
+            amount_paise: number;
+            created_at: string;
+            approvals: Array<{ id: string; status: string }>;
+          }
+          const subRows = mySubmitted as unknown as RawSubmittedRow[];
+          setSubmittedAwaiting(
+            subRows.map((s) => ({
+              id: s.id,
+              title: s.title,
+              amount_paise: s.amount_paise,
+              approved_count: s.approvals?.filter((a) => a.status === 'approved').length ?? 0,
+              total_participants: s.approvals?.length ?? 0,
+              created_at: s.created_at,
+            }))
+          );
+        }
+      } catch {
+        setSubmittedAwaiting([]);
+      }
+
+      // D. Disputed expenses requiring resolution
+      try {
+        const { data: disputed } = await supabase
+          .from('expenses')
+          .select(
+            `
+            id, title, amount_paise, created_at, status,
+            approvals:expense_approvals (dispute_category, dispute_reason)
+          `
+          )
+          .eq('creator_id', user.id)
+          .eq('status', 'disputed');
+
+        if (disputed) {
+          interface RawDisputedRow {
+            id: string;
+            title: string;
+            amount_paise: number;
+            created_at: string;
+            approvals: Array<{ dispute_category: string | null; dispute_reason: string | null }>;
+          }
+          const dispRows = disputed as unknown as RawDisputedRow[];
+          setDisputedExpenses(
+            dispRows.map((d) => ({
+              id: d.id,
+              title: d.title,
+              amount_paise: d.amount_paise,
+              dispute_category: d.approvals?.[0]?.dispute_category ?? null,
+              dispute_reason: d.approvals?.[0]?.dispute_reason ?? null,
+              created_at: d.created_at,
+            }))
+          );
+        }
+      } catch {
+        setDisputedExpenses([]);
+      }
+
       setLastRefreshed(new Date());
       setLoadState('loaded');
     } catch {
@@ -132,10 +345,36 @@ export function HomePage() {
     void loadUnreadCount();
   }, [loadHomeData, loadUnreadCount]);
 
+  // Recipient action for quick settlement response
+  const handleQuickSettlementResponse = async (
+    settlementId: string,
+    action: 'confirm' | 'reject'
+  ) => {
+    if (!user) return;
+    setActionLoading(settlementId);
+    try {
+      await db.rpc('respond_to_settlement', {
+        p_settlement_id: settlementId,
+        p_action: action,
+      });
+      await loadHomeData();
+    } catch {
+      // Ignored
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const isLoading = loadState === 'loading';
   const hasError = loadState === 'error';
   const isEmpty =
     loadState === 'empty' || (data && data.owedToPaise === 0 && data.owingPaise === 0);
+
+  const totalPendingActions =
+    awaitingMyApproval.length +
+    submittedAwaiting.length +
+    disputedExpenses.length +
+    pendingSettlements.length;
 
   const summaryHeadline = (() => {
     if (!data) return 'Checking your balances…';
@@ -252,10 +491,176 @@ export function HomePage() {
         </div>
       )}
 
+      {/* Requirement E: Pending Actions Area */}
+      {!isLoading && !hasError && (
+        <div className="mb-6 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="section-title text-muted flex items-center gap-1.5 text-xs font-semibold tracking-wider uppercase">
+              <Clock size={14} className="text-[rgb(var(--color-pending))]" />
+              Pending Actions
+              {totalPendingActions > 0 && (
+                <span className="badge-pending ml-1 text-[10px]">{totalPendingActions}</span>
+              )}
+            </p>
+          </div>
+
+          {/* Empty state: nothing pending */}
+          {totalPendingActions === 0 ? (
+            <div className="card py-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2
+                  size={16}
+                  className="flex-shrink-0 text-[rgb(var(--color-positive))]"
+                />
+                <p className="text-secondary text-xs font-medium">
+                  All caught up! No pending approvals or settlements.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {/* 1. Expenses awaiting your approval */}
+              {awaitingMyApproval.map((item) => (
+                <div
+                  key={item.id}
+                  className="card flex items-center justify-between gap-3 border-l-4 border-l-[rgb(var(--color-pending))] p-3.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="badge-pending text-[10px]">Awaiting your approval</span>
+                    <p className="text-primary mt-1 truncate text-sm font-semibold">{item.title}</p>
+                    <p className="text-muted text-xs">
+                      Added by {item.creator_name} • {formatINR(item.amount_paise)}
+                    </p>
+                  </div>
+                  <Link
+                    to={`/expenses/${item.id}`}
+                    className="btn-primary flex-shrink-0 py-1.5 text-xs"
+                    aria-label={`Review ${item.title}`}
+                  >
+                    Review →
+                  </Link>
+                </div>
+              ))}
+
+              {/* 2. Settlements awaiting your confirmation (recipient) */}
+              {pendingSettlements
+                .filter((s) => s.type === 'incoming')
+                .map((s) => (
+                  <div
+                    key={s.id}
+                    className="card space-y-2.5 border-l-4 border-l-[rgb(var(--color-accent))] p-3.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <span className="badge-pending text-[10px]">Payment reported</span>
+                        <p className="text-primary mt-1 text-sm font-semibold">
+                          {s.payer_name} reported paying you {formatINR(s.amount_paise)}
+                        </p>
+                        <p className="text-muted text-[11px]">
+                          Confirm receipt to update your ledger balance.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => void handleQuickSettlementResponse(s.id, 'confirm')}
+                        disabled={actionLoading === s.id}
+                        className="btn-primary flex-1 py-1.5 text-xs"
+                      >
+                        {actionLoading === s.id ? <Spinner size={14} /> : <Check size={14} />}{' '}
+                        Confirm Receipt
+                      </button>
+                      <button
+                        onClick={() => void handleQuickSettlementResponse(s.id, 'reject')}
+                        disabled={actionLoading === s.id}
+                        className="btn-secondary flex-1 py-1.5 text-xs text-[rgb(var(--color-negative))]"
+                      >
+                        {actionLoading === s.id ? <Spinner size={14} /> : <X size={14} />} Not
+                        Received
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+              {/* 3. Disputed expenses needing attention */}
+              {disputedExpenses.map((item) => (
+                <div
+                  key={item.id}
+                  className="card flex items-center justify-between gap-3 border-l-4 border-l-[rgb(var(--color-negative))] p-3.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="badge-negative inline-flex items-center gap-1 text-[10px]">
+                      <AlertTriangle size={11} /> Disputed
+                    </span>
+                    <p className="text-primary mt-1 truncate text-sm font-semibold">{item.title}</p>
+                    <p className="text-muted text-xs">
+                      {item.dispute_category
+                        ? `Issue: ${item.dispute_category}`
+                        : 'Participant requested changes'}
+                    </p>
+                  </div>
+                  <Link
+                    to={`/expenses/${item.id}`}
+                    className="btn-secondary flex-shrink-0 py-1.5 text-xs text-[rgb(var(--color-negative))]"
+                    aria-label={`Resolve dispute for ${item.title}`}
+                  >
+                    Resolve →
+                  </Link>
+                </div>
+              ))}
+
+              {/* 4. Expenses you submitted awaiting others */}
+              {submittedAwaiting.map((item) => (
+                <div key={item.id} className="card flex items-center justify-between gap-3 p-3.5">
+                  <div className="min-w-0 flex-1">
+                    <span className="badge-neutral text-[10px]">Awaiting participants</span>
+                    <p className="text-primary mt-1 truncate text-sm font-medium">{item.title}</p>
+                    <p className="text-muted text-xs">
+                      {item.approved_count} of {item.total_participants} approved •{' '}
+                      {formatINR(item.amount_paise)}
+                    </p>
+                  </div>
+                  <Link
+                    to={`/expenses/${item.id}`}
+                    className="btn-ghost text-muted flex-shrink-0 text-xs"
+                    aria-label={`View status for ${item.title}`}
+                  >
+                    Status →
+                  </Link>
+                </div>
+              ))}
+
+              {/* 5. Settlements you reported awaiting friend confirmation */}
+              {pendingSettlements
+                .filter((s) => s.type === 'outgoing')
+                .map((s) => (
+                  <div key={s.id} className="card flex items-center justify-between gap-3 p-3.5">
+                    <div className="min-w-0 flex-1">
+                      <span className="badge-neutral text-[10px]">Payment sent</span>
+                      <p className="text-primary mt-1 truncate text-sm font-medium">
+                        {formatINR(s.amount_paise)} to {s.recipient_name}
+                      </p>
+                      <p className="text-muted text-xs">Awaiting their confirmation</p>
+                    </div>
+                    <Link
+                      to="/settlements"
+                      className="btn-ghost text-muted flex-shrink-0 text-xs"
+                      aria-label="View settlement in settlements page"
+                    >
+                      View →
+                    </Link>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Settled up card if zero balances and not loading */}
       {!isLoading && !hasError && data && data.owedToPaise === 0 && data.owingPaise === 0 && (
         <div className="card mb-4" aria-live="polite">
           <p className="text-primary text-center text-base font-semibold">
-            You&apos;re all caught up.
+            You&apos;re all caught up on balances.
           </p>
         </div>
       )}

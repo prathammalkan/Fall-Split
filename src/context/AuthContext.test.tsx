@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '@supabase/supabase-js';
@@ -104,5 +105,49 @@ describe('AuthProvider session transitions', () => {
 
     await waitFor(() => expect(screen.getByText('active-user:Active User')).toBeTruthy());
     expect(db.rpc).toHaveBeenCalledWith('get_profile_for_user', { p_user_id: 'active-user' });
+  });
+
+  it('delegates resendVerificationEmail to supabase.auth.resend with callback url', async () => {
+    let capturedContext: ReturnType<typeof useAuth> | null = null;
+    function CaptureContext() {
+      const auth = useAuth();
+      useEffect(() => {
+        capturedContext = auth;
+      }, [auth]);
+      return null;
+    }
+
+    vi.mocked(supabase.auth.getSession).mockResolvedValueOnce({
+      data: { session: null },
+      error: null,
+    } as Awaited<ReturnType<typeof supabase.auth.getSession>>);
+    vi.mocked(supabase.auth.onAuthStateChange).mockReturnValueOnce({
+      data: { subscription: { unsubscribe: vi.fn() } },
+    } as unknown as ReturnType<typeof supabase.auth.onAuthStateChange>);
+    vi.mocked(supabase.auth.resend).mockResolvedValueOnce({
+      data: { user: null, session: null },
+      error: null,
+    } as never);
+
+    render(
+      <AuthProvider>
+        <CaptureContext />
+      </AuthProvider>
+    );
+
+    await waitFor(() => expect(capturedContext?.loading).toBe(false));
+
+    let result!: { error: Error | null };
+    await act(async () => {
+      result = await capturedContext!.resendVerificationEmail('test@example.com', '/groups');
+    });
+    expect(result.error).toBeNull();
+    expect(supabase.auth.resend).toHaveBeenCalledWith({
+      type: 'signup',
+      email: 'test@example.com',
+      options: {
+        emailRedirectTo: expect.stringContaining('/auth/callback?redirect=%2Fgroups'),
+      },
+    });
   });
 });

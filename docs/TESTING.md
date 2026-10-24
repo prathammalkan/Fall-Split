@@ -24,10 +24,10 @@ npm run test:coverage
 
 ## Test Files
 
-| File | What it tests |
-|---|---|
-| `src/lib/money.test.ts` | `formatINR`, `parseINR`, `rupeesToPaise`, assertions |
-| `src/lib/splits.test.ts` | All 6 split methods + reconciliation invariants |
+| File                       | What it tests                                                  |
+| -------------------------- | -------------------------------------------------------------- |
+| `src/lib/money.test.ts`    | `formatINR`, `parseINR`, `rupeesToPaise`, assertions           |
+| `src/lib/splits.test.ts`   | All 6 split methods + reconciliation invariants                |
 | `src/lib/balances.test.ts` | Pair balances, debt simplification, settlement sign convention |
 
 ## Financial Correctness Tests
@@ -56,6 +56,7 @@ When `totalPaise % n !== 0`, the remainder (1 paise at a time) goes to the first
 Sign convention: **positive netPaise = user is owed money, negative = user owes money**.
 
 When B (debtor) pays A (creditor):
+
 - A's netPaise decreases (A is owed less)
 - B's netPaise increases (B owes less)
 
@@ -88,6 +89,7 @@ Tests run automatically on every push and PR via GitHub Actions (`.github/workfl
 ## Test Configuration
 
 See `vitest.config.ts`. Key settings:
+
 - `environment: 'jsdom'` — Simulates browser APIs
 - `setupFiles: ['./src/test/setup.ts']` — Installs `fake-indexeddb`
 - `globals: true` — No need to import `describe`/`it`/`expect` explicitly (though explicit is preferred)

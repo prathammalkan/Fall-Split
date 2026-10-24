@@ -47,10 +47,19 @@ try {
     console.log('uri_allow_list:', cfg.uri_allow_list);
 
     // Update the config with our redirect URLs.
+    const siteUrl = process.env.SUPABASE_SITE_URL ?? 'https://fall-split.vercel.app';
     const newConfig = {
       ...cfg,
-      site_url: 'http://localhost:5173',
-      uri_allow_list: 'http://localhost:5173/**,https://fallsplit.vercel.app/**,https://*.vercel.app/**',
+      site_url: siteUrl,
+      uri_allow_list: [
+        'http://localhost:5173/auth/callback',
+        'http://localhost:5173/reset-password',
+        'https://fall-split.vercel.app',
+        'https://fall-split.vercel.app/auth/callback',
+        'https://fall-split.vercel.app/reset-password',
+        'https://*.vercel.app/auth/callback',
+        'https://*.vercel.app/reset-password',
+      ].join(','),
     };
 
     await client.query(

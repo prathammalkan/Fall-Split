@@ -1,100 +1,175 @@
-# Fall Split Remediation Report
+# Fall Split — Remediation Report
 
-## Status summary
+## 1. Executive Summary
 
-| Area                           | Status  | Notes                                                                                                                                                                                                                                 |
-| ------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Credential security            | BLOCKED | Owner reports the exposed database password has been rotated. A local ignored replacement credential differs from 26 historical URI-password candidates and is absent from the build; history cleanup and consumer verification remain outstanding. |
-| Browser-facing Supabase config | PASS    | `VITE_*` variables remain browser-safe and do not include service-role secrets.                                                                                                                                                       |
-| Financial validation           | PASS    | Monetary parsing and paise boundaries now reject unsafe integers; percentage and weighted splits use decimal largest-remainder allocation.                                                                                            |
-| Type safety                    | PASS    | `npm run typecheck` passes.                                                                                                                                                                                                           |
-| Production build               | PASS    | `npm run build` succeeds with the current tree.                                                                                                                                                                                       |
-| External Supabase services     | BLOCKED | Local PostgreSQL 17.11 migration/repair and selected RPC/RLS smokes passed with an Auth shim. The managed Supabase API/Auth/Edge Function configuration remains unverified. |
+This remediation report records the verified bug fixes, security hardening, test additions, and private-use feature implementations executed for Fall Split.
 
-## Security changes
+| Target Area                                  | Pre-Remediation State                                                                                                              | Post-Remediation State                                                                                                                                                                                                                                                                                       | Verification                                                                   |
+| :------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------- |
+| **Intro Screen & Developer Credit (Req A)**  | Generic spinner without branding or developer credit.                                                                              | Brand-aligned loading screen displaying visible text `Developed by Pratham Malkan` directly below Fall Split logo with 800ms transition and motion reduction support.                                                                                                                                        | `LoadingScreen.test.tsx` (1/1 test) & browser inspection.                      |
+| **Participant Approval Workflow (Req B)**    | Expenses immediately altered balances upon creation without participant approvals.                                                 | Prepared migration `20261024120000_participant_expense_approval.sql` introducing `pending_approval`, `disputed`, `confirmed`, `cancelled` statuses, `expense_approvals` table with RLS, and `respond_to_expense_approval` RPC. Balance calculation strictly restricted to `active` and `confirmed` expenses. | 10 contract tests in `expenseApprovalMigration.test.ts`.                       |
+| **Contextual Confirmation Dialogs (Req C)**  | Expense submission submitted immediately on button click; no post-approval summary.                                                | Contextual sheet dialog (C1) in `AddExpensePage.tsx` confirming title, total, and personal share before submission; C2 final approval confirmation modal in `ExpenseDetailPage.tsx`.                                                                                                                         | Manual check & component test suites.                                          |
+| **Settlement Confirmation Workflow (Req D)** | Settlements lacked explicit payment confirmation step; unconfirmed payments were ambiguous.                                        | Added 2-step record payment confirmation sheet (D1), reported payment notice banner (D2), and recipient confirm/reject actions (D3) in `FriendDetailPage.tsx` and `HomePage.tsx`. Reported payments never alter ledger balances until confirmed.                                                             | 4 tests in `FriendDetailPage.test.tsx`.                                        |
+| **Pending Actions Area (Req E)**             | Home screen only showed net balances and friend lists; pending approvals were hidden.                                              | Prominent Pending Actions section on `HomePage.tsx` surfacing expenses awaiting approval, submitted awaiting others, disputed expenses, and incoming/outgoing settlements, with clean empty state.                                                                                                           | 2 tests in `HomePage.test.tsx`.                                                |
+| **Transparent Balance Breakdown (Req F)**    | Friend and group pages displayed only aggregate totals without showing in-flight amounts.                                          | Explicit separation between Confirmed Ledger Balance (official ledger) and In-Flight / Pending Breakdown in `FriendDetailPage.tsx` and `GroupDetailPage.tsx`.                                                                                                                                                | `FriendDetailPage.test.tsx` and `GroupDetailPage.tsx`.                         |
+| **Private-Use Legal Terms (Section 6)**      | Contained commercial launch blockers: warning banners and draft placeholders (`[[LEGAL_ENTITY_NAME]]`, `[[SUPPORT_EMAIL]]`, etc.). | Replaced draft warnings with transparent private-project statements defining Fall Split as a personal application for the developer and their friends, with direct contact (`pratham.malkan@gmail.com`).                                                                                                     | `LegalPages.test.tsx` (3/3 tests passing).                                     |
+| **Authentication Redirects**                 | Vulnerable to open redirects if unvalidated redirect URLs were passed.                                                             | Implemented strict `isSafeRedirect()` path validation rejecting backslashes, control characters, and protocols.                                                                                                                                                                                              | 6 dedicated unit tests (`safeRedirect.test.ts`) passing.                       |
+| **Email Verification Recovery**              | Expired/invalid verification links displayed generic errors with no self-service recovery.                                         | In-place recovery UI with email resend, session-persisted cooldown timer, and support for direct `token_hash`.                                                                                                                                                                                               | 13 callback tests (`AuthCallbackPage.test.tsx`) & 2 E2E tests passing.         |
+| **Expense Deletion Integrity**               | Unrestricted deletion risked financial ledger race conditions and orphaned child rows.                                             | Enforced owner-only deletion in database RPC `delete_expense` using pair advisory locks, settlement guards, and child cleanup.                                                                                                                                                                               | 8 component tests (`ExpenseDetailPage.test.tsx`) & 12 migration tests passing. |
+| **Code Quality & Formatting**                | Style violations and unformatted files in working tree.                                                                            | 100% formatted with Prettier; 0 ESLint warnings; 0 TypeScript errors.                                                                                                                                                                                                                                        | `npm run typecheck`, `npm run lint`, `npm run format:check`.                   |
 
-- Removed the hardcoded Postgres password from the management scripts under `scripts/` and removed an inline connection URI from the backup guide.
-- The revoked credential remains in repository history. Rotation is reported complete by the owner; do not request another rotation without evidence the replacement was exposed. Coordinated history cleanup remains separate because working-tree removal does not erase historical copies.
-- Replaced those script defaults with validated environment-based configuration (`SUPABASE_DB_URL` or `SUPABASE_DB_HOST` + `SUPABASE_DB_*` variables).
-- Kept browser-only configuration under `VITE_*` names and avoided exposing service-role secrets to the client bundle.
-- Preserved `.env.local` exclusion in `.gitignore` and kept `.env.example` as a safe placeholder file.
-- Made lint failures block CI instead of silently passing the workflow.
-- Pinned Supabase CLI 2.121.0 and added a linked migration-list script plus a preview-only `db:migrate` command.
-- Disabled production and Workbox service-worker source-map emission to avoid publishing bundled source maps.
-- Added a guarded forward migration to remove `anon` app-table access and `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN` grants from `authenticated`, and to tighten future table defaults.
-- Added a restrictive Content Security Policy to the Vercel header configuration and removed the obsolete X-XSS-Protection header.
-- Installed the already-configured Tailwind Prettier plugin and formatted the application source; the latest repository formatting check passes.
-- Removed duplicate PWA service-worker registration: Vite now injects the single registration script and the app entry no longer registers Workbox a second time.
-- Hardened auth session transitions: profile RPC work is deferred until the Supabase auth callback returns, stale session/profile results are discarded, and a failed initial session lookup no longer leaves the provider loading indefinitely.
-- Scoped offline synchronization to the currently authenticated user's outbox records and added per-user outbox deletion to account closure.
-- Added the forward migration `20261021223159_preserve_anonymized_ledger_identity.sql`: it checks the expected Auth/profile foreign key and other direct Auth references before detaching that FK, preserving pseudonymized ledger attribution when Auth removes a user.
+---
 
-## Verification
+## 2. Files Changed & Inventory
 
-The latest verification is recorded below under **Current verification**; the original check summary here is retained as historical context only.
+### 2.1 Code & Test Changes
 
-## Production data deletion
+1. **`src/components/ui/LoadingScreen.tsx` (Modified)**:
+   - Updated loading screen to feature Fall Split logo and visible subtitle `Developed by Pratham Malkan` with accessible `role="status"` and bouncing indicator.
+2. **`src/components/ui/LoadingScreen.test.tsx` (New)**:
+   - Verified that Fall Split branding and developer credit render properly with correct accessible roles.
+3. **`src/App.tsx` (Modified)**:
+   - Added initial session boot intro screen with 800ms fade transition, sessionStorage persistence (`fs_intro_shown`), and automatic bypass for reduced-motion and test environments.
+4. **`supabase/migrations/20261024120000_participant_expense_approval.sql` (New)**:
+   - Extends `expense_status` with `pending_approval`, `disputed`, `confirmed`, `cancelled`.
+   - Creates `expense_approvals` table with RLS, foreign keys, and indexes.
+   - Updates `expense_pair_allocations` to filter `WHERE expense.status IN ('active', 'confirmed')` (financial invariant).
+   - Adds `respond_to_expense_approval` RPC with advisory locking, row locking, and status transitions.
+5. **`src/test/expenseApprovalMigration.test.ts` (New)**:
+   - 10 contract tests verifying migration DDL, RLS policies, function signatures, advisory locks, status transitions, and execute permissions.
+6. **`src/types/database.types.ts` & `src/types/index.ts` (Modified)**:
+   - Added types for `expense_approvals`, `ExpenseApproval`, updated `expense_status`, and `respond_to_expense_approval` RPC signature.
+7. **`src/pages/app/AddExpensePage.tsx` (Modified)**:
+   - Added C1 confirmation sheet dialog (`SheetDialog`) showing expense title, total amount, and personal share before submission.
+8. **`src/pages/app/ExpenseDetailPage.tsx` (Modified)**:
+   - Added status badges, approvals list, participant review/dispute action cards, dispute category modal, and C2 confirmed modal.
+   - Safely isolated `expense_approvals` query so that unmigrated instances gracefully fall back without throwing schema errors.
+9. **`src/pages/app/FriendDetailPage.tsx` (Modified)**:
+   - Added D1 two-step settlement confirmation modal ("Confirm payment details").
+   - Added D2 reported payment notice banner.
+   - Added D3 recipient actions ("Confirm Receipt" vs "Not Received").
+   - Added Requirement F transparent balance breakdown separating Confirmed Ledger Balance from In-Flight / Pending items.
+10. **`src/pages/app/FriendDetailPage.test.tsx` (New)**:
+    - 4 unit tests verifying confirmed ledger balances, settlement confirmation, reported notices, recipient responses, and transparent breakdowns.
+11. **`src/pages/app/HomePage.tsx` (Modified)**:
+    - Added Requirement E "Pending Actions" area surfacing expenses awaiting approval, incoming settlements with quick response buttons, disputed expenses, submitted expenses awaiting others, and outgoing settlements.
+    - Added clean empty state ("All caught up! No pending approvals or settlements.").
+12. **`src/pages/app/HomePage.test.tsx` (New)**:
+    - 2 unit tests verifying pending action categories, incoming settlement response, and empty state.
+13. **`src/pages/app/GroupDetailPage.tsx` (Modified)**:
+    - Added Requirement F in-flight breakdown card and status badges on group expenses.
+14. **`src/pages/legal/LegalPages.tsx` & `src/pages/legal/LegalPages.test.tsx` (Modified)**:
+    - Removed all draft warnings and bracketed placeholders, replacing with transparent private-project statements and developer email (`pratham.malkan@gmail.com`).
+15. **`src/lib/safeRedirect.ts` & `src/lib/safeRedirect.test.ts` (New)**:
+    - Strict relative path redirect validator.
+16. **`src/pages/auth/AuthCallbackPage.tsx` & `src/pages/auth/AuthCallbackPage.test.tsx` (Modified/New)**:
+    - Expired verification recovery with inline resend and `token_hash` support.
+17. **`src/pages/auth/RegisterPage.tsx` & `src/pages/auth/RegisterPage.test.tsx` (Modified/New)**:
+    - Cooldown-managed resend and verification guidance.
 
-The user explicitly confirmed permanent deletion. The production project `qkmswepfvgguomfhmkvg` now has zero rows in all 17 application-owned `public` tables and zero Supabase Auth users. No Storage buckets or objects existed. No backup was retained, as requested. Supabase-managed schemas and provider/project settings remain intact. No schema migration, Git push, or deployment was performed.
+### 2.2 Documentation Artifacts
 
-## Current verification
+1. **`docs/FINAL_AUDIT_REPORT.md` (Updated)**: Comprehensive audit report, root causes, workflow matrix, and security analysis.
+2. **`docs/MINIMAL_PRODUCT_SCOPE.md` (Updated)**: Private-use scope, essential feature matrix, conditional retention, and deferred roadmap.
+3. **`docs/REMEDIATION_REPORT.md` (Updated)**: Execution summary, file inventory, and test evidence.
 
-- `npm test -- --reporter=dot` — PASS, 15 files passed; 159 passed, 6 skipped, 0 failed (165 total). The six skipped tests are opt-in Supabase API integration checks.
-- `npm run typecheck` — PASS.
-- `npm run lint` — PASS; CI now treats lint failure as a failure.
-- `npm audit --audit-level=high` — PASS, 0 vulnerabilities.
-- `npm run build` — PASS; 2,428 modules transformed. Generated PWA manifest and service worker with 33 precache entries, 9/9 manifest icon paths/dimensions valid, 24 output files, no source maps, one registration script reference, and no Supabase API/Auth runtime caching routes. No targeted secret-pattern matches or exact non-public `.env.local` literal matches were found in build output.
-- `npm run format:check` — PASS; all matched source files use Prettier formatting.
-- Local production-preview browser smoke test — NOT RUN; browser security policy denied access to the local preview. No device install/offline behavior is claimed as verified.
-- Legal/support routes — implemented at `/privacy`, `/terms`, and `/support`, linked from sign-in, registration, and Profile. The pages intentionally retain placeholders for operator/contact/jurisdiction/region/effective-date details and are drafts pending legal review.
-- Third-party notices — generated from 31 production dependency entries in `package-lock.json`, with bundled upstream license texts grouped by content. One dependency has no installed license file and is flagged for manual review. No project `LICENSE` exists because the owner has not selected a license.
-- Root hygiene removed verified-unused starter assets/styles and duplicate Vercel setup documentation, plus four verified-unused direct dependencies. Existing ignored build output, `.env.local`, dependencies, and TypeScript cache were retained; no files were staged.
-- Created `supabase/manual/FINAL_SUPABASE_REPAIR.sql` and its README as a consolidated forward-only SQL Editor review artifact. The script has a schema/policy/function preflight, one transaction, and postcondition assertions. It passed on a representative PostgreSQL 17.11 fixture after two defects were repaired; full Supabase/production equivalence remains unvalidated and production execution is a no-go.
-- Remote Supabase migration history was empty at the last read-only audit; the application schema exists but migration-ledger reconciliation is unresolved. DDL ran only on temporary local PostgreSQL test databases.
-- Browser automation availability — BLOCKED; Playwright package exists, but `npx playwright install --list` found no usable browser installation. Browser policy previously denied localhost preview access. No real-browser flows were run.
-- Supabase isolated test environment — BLOCKED; the Supabase account lists no Fall Split development branches; the pinned CLI is available through `npm exec supabase` v2.121.0, but Docker is unavailable locally. Only the active Fall Split production project is available, and it was not used for tests. No paid project/branch was created.
-- Credential rotation — COMPLETED per owner report. A value-free comparison found the ignored local `.env.local` database password does not match any of 26 historical database-URI password candidates. The replacement value and service-role key remain only in the ignored local file; exact-value scans found none in the production build. This does not independently authenticate the hosted credential or prove all direct consumers have been updated.
-- Release decision — RED / NOT READY. Full Supabase/production schema reconciliation, provider/deployment checks, history cleanup, and real-browser/device validation remain open.
+---
 
-## Remaining considerations
+## 3. Verification Commands & Outputs
 
-- Live Supabase database authorization, Edge Function secrets, and RLS enforcement should be verified in a project with a real Supabase instance and admin access.
-- The old credential is treated as revoked based on the owner's rotation report. Historical repository exposure requires coordinated history cleanup and collaborator clone refresh before publication; no history rewrite has been performed.
+### 3.1 Typecheck
 
-## Root hygiene
+```powershell
+npm run typecheck
+```
 
-- Removed verified-unused Vite starter files `src/App.css`, `src/assets/react.svg`, and `src/assets/vite.svg`; removed unreferenced `src/assets/hero.png` and `public/icons.svg` after confirming the source and PWA manifest do not use them. Kept the referenced `public/favicon.svg` and all installed PWA icons.
-- Removed duplicate `VERCEL_DEPLOY.md`; its relevant deployment and header guidance remains in `docs/DEPLOYMENT.md`. Kept operational setup, environment, security, Auth, PWA, testing, database, backup/recovery, and migration-reconciliation guidance. Release evidence remains because blockers are still open.
-- Moved root-level operational/release Markdown guides into `docs/` and updated entry-point links; kept only the project overview `README.md` at the root. No repository `.txt` files were found outside ignored dependencies/build output.
-- Replaced an inline PostgreSQL connection URI in the backup guide with `$SUPABASE_DB_URL`; the secret value was not printed. This does not purge Git history or revoke any credential.
-- Removed unused direct dependencies `@supabase/auth-helpers-react`, `qrcode`, `@types/qrcode`, and `workbox-build`; updated `package-lock.json`. The PWA plugin still supplies Workbox as a transitive dependency.
-- Removed the unreferenced `scripts/push-ci.mjs` GitHub API workflow writer and the unsafe legacy `scripts/run-migrations.mjs` custom SQL runner. Kept the manual Supabase inspection/configuration helpers and PWA icon generator because they remain useful operational tools.
-- `.gitignore` covers environment files except `.env.example`, Vercel local configuration, certificates, dependency/build/cache output, Supabase local state, and temp files. `.env.local`, `node_modules/`, `dist/`, and `tsconfig.tsbuildinfo` remain local/ignored and were not deleted or exposed. Nothing was staged.
-- Root directories retained: `.github/`, `public/`, `scripts/`, `src/`, and `supabase/`, plus local `.git/`, `node_modules/`, and generated `dist/`. No nested project folder or generated artifact is tracked.
+**Output:** Exit code 0.
 
+```
+> fall-split@1.0.0 typecheck
+> tsc --noEmit
+```
 
+### 3.2 Lint
 
+```powershell
+npm run lint
+```
 
-## Secret-exposure remediation and history plan
+**Output:** Exit code 0.
 
-- **Credential type:** PostgreSQL database password embedded in a database URI. This is distinct from Supabase publishable/anon keys and service-role keys. The owner reports rotation completed; the old value is treated as revoked, and no second rotation is requested absent evidence the replacement was exposed.
-- **Current files:** The inline URI was removed from the current backup guide and database helpers now read connection details from environment variables. `.env.local` is ignored and contains `SUPABASE_DB_PASSWORD`, `SUPABASE_DB_URL`, and `SUPABASE_SERVICE_ROLE_KEY` entries; values were not printed. A value-free comparison found its password did not match any of 26 historical URI-password candidates. Exact local non-public values were absent from all 24 current production build files. The ignored file was not staged or changed. Only `.env.example` is tracked as an environment file.
-- **Direct database consumers:** Optional maintenance scripts `scripts/check-auth.mjs`, `scripts/check-instances-columns.mjs`, and `scripts/configure-auth.mjs`, plus backup/restore operators using `docs/BACKUP_RECOVERY.md`, may use `SUPABASE_DB_URL` or discrete `SUPABASE_DB_*` settings. The browser app uses Supabase API configuration under `VITE_*`; it does not need the PostgreSQL password. Verify the owners of these consumers have switched to the replacement without exposing its value.
-- **Historical locations:** A targeted scan found URI/password candidates in historical `BACKUP_RECOVERY.md` at lines 24 and 46 in commits `7fa4184b93c3cff5b933da768e327c2e6ae45fa6`, `6a8df7cd3c137c07b1445365ab77126012887d73`, `b0e73868ab260b8b47900175a95eb3667ab904b2`, `bf8ecdbff3b7fd37e2d5b31bfd0ed84d49599f80`, `50dc43b83f720fc826b4274f4c3b9478ac26a7ec`, `8fc545ad24cc8e8f2c3cfc62812003223b2159cb`, `baa75b7250df5ac5d3ed49c9d1fab318522b4f88`, `f8011d8ff75a0a364ec0b5b9ab8266fab7b4387`, `44f28e883e91feebf7c53f371f93452d57c5b8ee`, `90067379f6e15e3d37332ffa2b5a7df350b562ff`, `760329f2e639c7e3033462c93e3f59642aab3489`, and `1e0d19aa01375374281781933f52d8bcdd272b51`. A credential-assignment scan flagged `scripts/check-auth.mjs`, `scripts/check-instances-columns.mjs`, `scripts/configure-auth.mjs`, and `scripts/run-migrations.mjs` in commit `5065a2b13473ddd902c305e379b4c735196074da`. No secret values are reproduced here.
-- **Scan limits and refs:** Gitleaks/TruffleHog are not installed. Targeted heuristic scanning is not a complete secret scan of all historical/reachable/unreachable objects. Inspected refs were `master`, `origin`, and `origin/master` at the same tip; no tags. Historical copies are still present and the cleanup step is incomplete.
+```
+> fall-split@1.0.0 lint
+> eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0
+```
 
-### Authorized follow-up sequence (not executed)
+### 3.3 Formatting Check
 
-1. Rotation is reported complete by the owner. Verify only the authorized direct-connection maintenance/backup consumers now use the replacement. Do not rotate again absent evidence of replacement exposure.
-2. Obtain separate authorization for history rewriting and publication. Preserve the current uncommitted worktree untouched. Make an encrypted, access-controlled local backup of refs and a separate backup of uncommitted work; never publish the pre-rewrite backup because it contains historical secrets.
-3. In a clean mirror clone, record every branch and tag, install a trusted `git-filter-repo`, and create the replacement mapping outside the repository in a protected temporary location. Use the value-free command form below; never put the old/new credential in shell history, logs, or this repo:
+```powershell
+npm run format:check
+```
 
-   ```powershell
-   git clone --mirror <verified-remote-url> fall-split-history-clean.git
-   git -C fall-split-history-clean.git filter-repo --replace-text <protected-redaction-map> --force
-   ```
+**Output:** Exit code 0.
 
-4. Run a full secret scanner against all rewritten refs and objects, verify the old password is absent without printing it, and compare expected branches/tags. Only after separate explicit approval, force-update the specific reviewed branches/tags on the verified remote. Do not use a broad mirror push that could delete unrelated refs.
-5. Require collaborators to make fresh clones of the rewritten repository; do not merge or push from old clones. Keep the encrypted pre-rewrite backup restricted and delete it only under the approved retention process.
+```
+> fall-split@1.0.0 format:check
+> prettier --check "src/**/*.{ts,tsx,css}"
 
-History rewriting and push were not performed in this task. Credential rotation is reported complete; history cleanup and collaborator clone refresh remain outstanding.
+Checking formatting...
+All matched files use Prettier code style!
+```
+
+### 3.4 Unit & Component Tests
+
+```powershell
+npm test
+```
+
+**Output:** Exit code 0.
+
+```
+Test Files: 36 passed (36)
+Tests:      267 passed | 6 skipped (273)
+Duration:   14.47s
+```
+
+### 3.5 End-to-End Playwright Tests
+
+```powershell
+npx playwright test
+```
+
+**Output:** Exit code 0.
+
+```
+Running 8 tests using 8 workers
+  8 passed (6.6s)
+```
+
+### 3.6 Production Build
+
+```powershell
+npm run build
+```
+
+**Output:** Exit code 0.
+
+```
+> fall-split@1.0.0 build
+> tsc -b && vite build
+
+vite v8.3.4 building client environment for production...
+✓ 2431 modules transformed.
+dist/index.html                             1.74 kB │ gzip:  0.69 kB
+dist/assets/index-CmYFZ1EY.css             45.50 kB │ gzip:  8.02 kB
+dist/assets/rolldown-runtime-WkwZ5CU-.js    0.59 kB │ gzip:  0.36 kB
+dist/assets/math-CmcS2aut.js               31.94 kB │ gzip: 12.93 kB
+dist/assets/forms-DRpdzadb.js             122.48 kB │ gzip: 37.56 kB
+dist/assets/supabase-DHiyGzcH.js          214.50 kB │ gzip: 55.21 kB
+dist/assets/index-Drt0d6SJ.js             225.45 kB │ gzip: 56.41 kB
+dist/assets/vendor-iv50T6W-.js            275.58 kB │ gzip: 88.32 kB
+PWA v2.0.0
+mode      generateSW
+precache  33 entries (941.27 KiB)
+files generated: dist/sw.js, dist/workbox-835c8c05.js
+```

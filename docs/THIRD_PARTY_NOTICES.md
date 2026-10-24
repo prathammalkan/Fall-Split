@@ -4,39 +4,39 @@ Generated from the production dependency entries in `package-lock.json` and the 
 
 ## Production dependencies
 
-| Package | Version | Declared license |
-|---|---:|---|
-| @hookform/resolvers | 5.9.2 | MIT |
-| @standard-schema/utils | 0.3.0 | MIT |
-| @supabase/auth-js | 2.118.0 | MIT |
-| @supabase/functions-js | 2.118.0 | MIT |
-| @supabase/phoenix | 0.4.5 | MIT |
-| @supabase/postgrest-js | 2.118.0 | MIT |
-| @supabase/realtime-js | 2.118.0 | MIT |
-| @supabase/storage-js | 2.118.0 | MIT |
-| @supabase/supabase-js | 2.118.0 | MIT |
-| cookie | 1.1.1 | MIT |
-| date-fns | 4.4.0 | MIT |
-| decimal.js | 10.6.0 | MIT |
-| iceberg-js | 0.8.1 | MIT |
-| idb | 8.0.4 | ISC |
-| js-tokens | 4.0.0 | MIT |
-| loose-envify | 1.4.0 | MIT |
-| lucide-react | 1.59.0 | ISC |
-| object-assign | 4.1.1 | MIT |
-| prop-types | 15.8.1 | MIT |
-| qrcode-generator | 2.0.4 | MIT |
-| react | 19.3.1 | MIT |
-| react-dom | 19.3.1 | MIT |
-| react-hook-form | 7.90.0 | MIT |
-| react-is | 16.13.1 | MIT |
-| react-qr-code | 2.2.0 | MIT |
-| react-router | 7.18.4 | MIT |
-| react-router-dom | 7.18.4 | MIT |
-| scheduler | 0.28.0 | MIT |
-| set-cookie-parser | 2.7.2 | MIT |
-| tslib | 2.8.1 | 0BSD |
-| zod | 4.6.7 | MIT |
+| Package                | Version | Declared license |
+| ---------------------- | ------: | ---------------- |
+| @hookform/resolvers    |   5.9.2 | MIT              |
+| @standard-schema/utils |   0.3.0 | MIT              |
+| @supabase/auth-js      | 2.118.0 | MIT              |
+| @supabase/functions-js | 2.118.0 | MIT              |
+| @supabase/phoenix      |   0.4.5 | MIT              |
+| @supabase/postgrest-js | 2.118.0 | MIT              |
+| @supabase/realtime-js  | 2.118.0 | MIT              |
+| @supabase/storage-js   | 2.118.0 | MIT              |
+| @supabase/supabase-js  | 2.118.0 | MIT              |
+| cookie                 |   1.1.1 | MIT              |
+| date-fns               |   4.4.0 | MIT              |
+| decimal.js             |  10.6.0 | MIT              |
+| iceberg-js             |   0.8.1 | MIT              |
+| idb                    |   8.0.4 | ISC              |
+| js-tokens              |   4.0.0 | MIT              |
+| loose-envify           |   1.4.0 | MIT              |
+| lucide-react           |  1.59.0 | ISC              |
+| object-assign          |   4.1.1 | MIT              |
+| prop-types             |  15.8.1 | MIT              |
+| qrcode-generator       |   2.0.4 | MIT              |
+| react                  |  19.3.1 | MIT              |
+| react-dom              |  19.3.1 | MIT              |
+| react-hook-form        |  7.90.0 | MIT              |
+| react-is               | 16.13.1 | MIT              |
+| react-qr-code          |   2.2.0 | MIT              |
+| react-router           |  7.18.4 | MIT              |
+| react-router-dom       |  7.18.4 | MIT              |
+| scheduler              |  0.28.0 | MIT              |
+| set-cookie-parser      |   2.7.2 | MIT              |
+| tslib                  |   2.8.1 | 0BSD             |
+| zod                    |   4.6.7 | MIT              |
 
 ## License texts
 

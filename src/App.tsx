@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import { AppShell } from './components/layout/AppShell';
@@ -33,8 +34,35 @@ import { PrivacyPage, SupportPage, TermsPage } from './pages/legal/LegalPages';
 
 export default function App() {
   const { session, loading } = useAuth();
+  const [introDone, setIntroDone] = useState(() => {
+    if (import.meta.env.MODE === 'test') return true;
+    try {
+      return sessionStorage.getItem('fs_intro_shown') === '1';
+    } catch {
+      return false;
+    }
+  });
 
-  if (loading) return <LoadingScreen />;
+  useEffect(() => {
+    if (introDone) return;
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    const timer = setTimeout(
+      () => {
+        try {
+          sessionStorage.setItem('fs_intro_shown', '1');
+        } catch {
+          // Ignore storage unavailability
+        }
+        setIntroDone(true);
+      },
+      prefersReducedMotion ? 0 : 800
+    );
+    return () => clearTimeout(timer);
+  }, [introDone]);
+
+  if (loading || !introDone) return <LoadingScreen />;
 
   if (!session) {
     return (

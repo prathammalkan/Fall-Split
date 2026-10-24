@@ -11,6 +11,7 @@ export type ExpensePayer = Tables<'expense_payers'>;
 export type ExpenseShare = Tables<'expense_shares'>;
 export type ExpenseItem = Tables<'expense_items'>;
 export type ExpenseItemAllocation = Tables<'expense_item_allocations'>;
+export type ExpenseApproval = Tables<'expense_approvals'>;
 export type ExpenseHistory = Tables<'expense_history'>;
 export type Settlement = Tables<'settlements'>;
 export type Notification = Tables<'notifications'>;
@@ -28,6 +29,7 @@ export interface ExpenseWithDetails extends Expense {
   payers: (ExpensePayer & { profile: Profile })[];
   shares: (ExpenseShare & { profile: Profile })[];
   items?: (ExpenseItem & { allocations: (ExpenseItemAllocation & { profile: Profile })[] })[];
+  approvals?: (ExpenseApproval & { profile: Profile })[];
   creator: Profile;
   group?: Group | null;
 }

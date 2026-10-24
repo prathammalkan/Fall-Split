@@ -9,16 +9,18 @@ Fall Split is configured for zero-configuration Vercel deployment.
 1. **Fork or push** this repository to GitHub.
 
 2. **Import** the project on [vercel.com/new](https://vercel.com/new):
- - Framework preset: **Vite**
- - Build command: `npm run build`
- - Output directory: `dist`
+
+- Framework preset: **Vite**
+- Build command: `npm run build`
+- Output directory: `dist`
 
 3. **Set environment variables** in Vercel → Settings → Environment Variables:
- ```
- VITE_SUPABASE_URL = https://yourproject.supabase.co
- VITE_SUPABASE_ANON_KEY = eyJh...
- VITE_APP_URL = https://your-app.vercel.app
- ```
+
+```
+VITE_SUPABASE_URL = https://yourproject.supabase.co
+VITE_SUPABASE_ANON_KEY = eyJh...
+VITE_APP_URL = https://your-app.vercel.app
+```
 
 4. Deploy. Vercel will auto-deploy on every push to `main`/`master`.
 
@@ -39,13 +41,14 @@ In Supabase → **Authentication → URL Configuration**:
 
 - **Site URL**: `https://your-app.vercel.app`
 - **Redirect URLs** (add all):
- - `https://your-app.vercel.app/auth/callback`
- - `https://your-app.vercel.app/reset-password`
- - `http://localhost:5173/auth/callback` (for development)
+- `https://your-app.vercel.app/auth/callback`
+- `https://your-app.vercel.app/reset-password`
+- `http://localhost:5173/auth/callback` (for development)
 
 ### OAuth Providers
 
 For Google and Apple OAuth, update the authorized redirect URIs to point to your Supabase project's auth callback:
+
 ```
 https://<project-ref>.supabase.co/auth/v1/callback
 ```
@@ -111,6 +114,7 @@ The `.github/workflows/ci.yml` pipeline runs on every push and PR:
 5. **Upload artifact** — `dist/` kept for 7 days
 
 To enable the CI, add these secrets in GitHub → Settings → Secrets:
+
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
 - `VITE_APP_URL`

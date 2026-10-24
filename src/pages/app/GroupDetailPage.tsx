@@ -36,9 +36,9 @@ export function GroupDetailPage() {
           .from('expenses')
           .select('id, title, amount_paise, expense_date, status')
           .eq('group_id', groupId)
-          .eq('status', 'active')
+          .in('status', ['active', 'confirmed', 'pending_approval', 'disputed'])
           .order('expense_date', { ascending: false })
-          .limit(20),
+          .limit(30),
       ]);
       if (groupResult.error || membersResult.error || expensesResult.error) {
         setGroup(null);
@@ -87,7 +87,14 @@ export function GroupDetailPage() {
       </div>
     );
 
-  const totalPaise = expenses.reduce((a, e) => a + e.amount_paise, 0);
+  const confirmedExpenses = expenses.filter(
+    (e) => e.status === 'active' || e.status === 'confirmed'
+  );
+  const pendingExpenses = expenses.filter(
+    (e) => e.status === 'pending_approval' || e.status === 'disputed'
+  );
+  const confirmedTotalPaise = confirmedExpenses.reduce((a, e) => a + e.amount_paise, 0);
+  const pendingTotalPaise = pendingExpenses.reduce((a, e) => a + e.amount_paise, 0);
 
   return (
     <div>
@@ -125,13 +132,30 @@ export function GroupDetailPage() {
           </div>
         </div>
 
+        {/* Confirmed Ledger Total */}
         <div className="card">
-          <p className="text-muted mb-1 text-xs">Total expenses</p>
-          <p className="text-primary text-2xl font-bold tabular-nums">{formatINR(totalPaise)}</p>
+          <p className="text-muted mb-1 text-xs">Confirmed group expenses</p>
+          <p className="text-primary text-2xl font-bold tabular-nums">
+            {formatINR(confirmedTotalPaise)}
+          </p>
           <p className="text-muted mt-1 text-xs">
-            {expenses.length} expense{expenses.length !== 1 ? 's' : ''}
+            {confirmedExpenses.length} confirmed expense{confirmedExpenses.length !== 1 ? 's' : ''}
           </p>
         </div>
+
+        {/* Requirement F: In-Flight & Pending Breakdown */}
+        {pendingExpenses.length > 0 && (
+          <div className="card space-y-1.5 border-l-4 border-l-[rgb(var(--color-pending))]">
+            <p className="text-muted text-xs font-semibold tracking-wider uppercase">
+              In-Flight & Pending Breakdown
+            </p>
+            <p className="text-secondary text-xs">
+              {pendingExpenses.length} expense{pendingExpenses.length !== 1 ? 's' : ''} awaiting
+              participant approval ({formatINR(pendingTotalPaise)}) — excluded from confirmed
+              balances until accepted.
+            </p>
+          </div>
+        )}
 
         <div>
           <p className="section-title mb-2">Expenses</p>
@@ -146,7 +170,15 @@ export function GroupDetailPage() {
               {expenses.map((e) => (
                 <Link key={e.id} to={`/expenses/${e.id}`} className="list-item">
                   <div className="min-w-0 flex-1">
-                    <p className="text-primary truncate text-sm font-medium">{e.title}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-primary truncate text-sm font-medium">{e.title}</p>
+                      {e.status === 'pending_approval' && (
+                        <span className="badge-pending text-[10px]">Pending approval</span>
+                      )}
+                      {e.status === 'disputed' && (
+                        <span className="badge-negative text-[10px]">Disputed</span>
+                      )}
+                    </div>
                     <p className="text-muted text-xs">
                       {format(new Date(e.expense_date), 'MMM d')}
                     </p>
