@@ -11,21 +11,22 @@
 
 ## A. Executive Summary
 
-| Item | Details |
-| --- | --- |
-| **Release Status** | **TECHNICALLY READY — PUBLIC LAUNCH BLOCKED BY LEGAL/OPERATOR INPUT** |
-| **Technical Verification** | All static checks, build, unit tests (202 passed), e2e browser tests (4 passed), database privilege contract tests, migration reconciliation (29/29), and isolated transaction tests verified. |
-| **P0 Defect Fixed** | **Invitation generation failure ("Could not generate invite link. Please try again.")** resolved. Root cause identified in database table ACLs and repaired with forward migration `20261023230000_restore_authenticated_invitation_creation.sql`. |
-| **Migration Drift Fixed** | Recovered missing applied migration `20261022222143_reconcile_authenticated_app_table_privileges.sql` from live catalog statements into local migrations directory; achieved exact 100% 29/29 parity. |
-| **Frontend Safeguards** | Profile failure-state single-flight retry and fallback UI implemented in `ProfilePage.tsx` with dedicated unit test in `ProfilePage.test.tsx`. |
-| **Typecheck Repaired** | Resolved TypeScript 6 build blocker in `src/test/postgrestAccessMigration.test.ts` by adopting Vite `?raw` imports instead of ambient Node.js file system APIs. |
-| **Remaining Blockers** | Public launch requires verified operator legal identity (`[[LEGAL_ENTITY_NAME]]`), business address, governing law jurisdiction, and monitored support/security email addresses (`[[SUPPORT_EMAIL]]`, `[[SECURITY_CONTACT]]`). |
+| Item                       | Details                                                                                                                                                                                                                                            |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Release Status**         | **TECHNICALLY READY — PUBLIC LAUNCH BLOCKED BY LEGAL/OPERATOR INPUT**                                                                                                                                                                              |
+| **Technical Verification** | All static checks, build, unit tests (202 passed), e2e browser tests (4 passed), database privilege contract tests, migration reconciliation (29/29), and isolated transaction tests verified.                                                     |
+| **P0 Defect Fixed**        | **Invitation generation failure ("Could not generate invite link. Please try again.")** resolved. Root cause identified in database table ACLs and repaired with forward migration `20261023230000_restore_authenticated_invitation_creation.sql`. |
+| **Migration Drift Fixed**  | Recovered missing applied migration `20261022222143_reconcile_authenticated_app_table_privileges.sql` from live catalog statements into local migrations directory; achieved exact 100% 29/29 parity.                                              |
+| **Frontend Safeguards**    | Profile failure-state single-flight retry and fallback UI implemented in `ProfilePage.tsx` with dedicated unit test in `ProfilePage.test.tsx`.                                                                                                     |
+| **Typecheck Repaired**     | Resolved TypeScript 6 build blocker in `src/test/postgrestAccessMigration.test.ts` by adopting Vite `?raw` imports instead of ambient Node.js file system APIs.                                                                                    |
+| **Remaining Blockers**     | Public launch requires verified operator legal identity (`[[LEGAL_ENTITY_NAME]]`), business address, governing law jurisdiction, and monitored support/security email addresses (`[[SUPPORT_EMAIL]]`, `[[SECURITY_CONTACT]]`).                     |
 
 ---
 
 ## B. Screenshot and UX Audit
 
 ### 1. Friends Invitation Dialog (P0 Blocker)
+
 - **Observed Defect:** The dialog showed `"Could not generate invite link. Please try again."` upon clicking "Generate invite link".
 - **Request Path Traced:** `ShareInviteModal.tsx` (`generateLink()`) → Generates 32-byte cryptographically secure random token (`crypto.getRandomValues`) → Constructs canonical URL via `getInviteUrl()` → Executes `db.from('invitation_tokens').insert(...)` → PostgREST API request.
 - **Root Cause:** Migration `20261023223000_narrow_authenticated_app_table_privileges.sql` revoked all table privileges on `public.invitation_tokens` and re-granted only `UPDATE (revoked_at)`, completely omitting `INSERT` and `SELECT` for role `authenticated`. As a result, PostgreSQL threw error code 42501 (`permission denied for table invitation_tokens`), which triggered `setGenError('Could not generate invite link. Please try again.')`.
@@ -40,12 +41,14 @@
   - Share modal URL consistency verified: QR payload, displayed link, clipboard copy, and native share sheet receive the identical URL.
 
 ### 2. Home Dashboard
+
 - Preserves existing branding, header, logo, and icons (`Handshake`, `RefreshCw`, `Bell`).
 - Empty-state card is only displayed when balances are cleanly zero (`isEmpty && !hasError && !isLoading`); when data requests fail, a distinct error card with a retry button is shown.
 - Floating "Add expense" button positioned above the bottom navigation using `bottom-[calc(72px+env(safe-area-inset-bottom))]` and `z-30`, preventing occlusion of bottom navigation items.
 - Focus rings and accessible labels verified.
 
 ### 3. Activity Screen
+
 - Rendered amounts reflect exact signed financial ledger participation:
   - Positive amounts (`+₹X.XX`, green): The authenticated user was a recorded payer for the expense (covering costs for other participants) or received a settlement.
   - Negative amounts (`-₹X.XX`, red): The authenticated user only owed a share and was not a payer, or made a settlement payment.
@@ -54,12 +57,14 @@
 - Empty state and error recovery states verified.
 
 ### 4. Navigation and Responsive Layout
+
 - Five primary navigation destinations verified: Home (`/`), Friends (`/friends`), Groups (`/groups`), Activity (`/activity`), Profile (`/profile`).
 - Active navigation item indicates active route state.
 - Bottom navigation is fixed with safe-area padding and accessible ARIA attributes.
 - Playwright mobile viewport tests confirmed navigation integrity on narrow viewports (390px mobile).
 
 ### 5. Legal, Support, and Public-Launch Readiness
+
 - Pages inspected: Privacy Policy (`/privacy`), Terms & Conditions (`/terms`), Contact & Support (`/support`).
 - Current status: Pages render with draft banner ("Draft for review. Replace every bracketed placeholder and obtain qualified legal review before release.") and bracketed placeholders.
 - Public launch gate remains BLOCKED until operator provides verified legal entity name, address, jurisdiction, and monitored contact emails.
@@ -169,30 +174,30 @@
 
 ## G. Complete Test Execution Matrix
 
-| Test Suite / Command | Scope | Result | Details |
-| --- | --- | --- | --- |
-| `npm run typecheck` | TypeScript static typing | **PASS** | Exit code 0, 0 errors. |
-| `npm run lint` | ESLint rules & directives | **PASS** | Exit code 0, 0 warnings, 0 errors. |
-| `npm run format:check` | Prettier formatting | **PASS** | All matched files use Prettier style. |
-| `npm test` | Vitest unit & regression suite | **PASS** | 27 test files, 202 tests passed, 6 skipped. |
-| `npm run test:e2e` | Playwright browser smoke suite | **PASS** | 4 tests passed across desktop and mobile. |
-| `npm run build` | Vite production bundle & PWA precache | **PASS** | Clean build in 1.11s, 33 precache entries. |
-| `npm audit --omit=dev --audit-level=high` | Dependency security audit | **PASS** | 0 vulnerabilities found. |
-| Isolated DB Transaction Tests | PostgREST ACLs, RLS, token integrity | **PASS** | All 5 security assertions verified, zero persistent rows. |
-| Migration Reconciliation | Production vs local migration history | **PASS** | Exactly 29 migrations in DB, 29 files locally. |
+| Test Suite / Command                      | Scope                                 | Result   | Details                                                   |
+| ----------------------------------------- | ------------------------------------- | -------- | --------------------------------------------------------- |
+| `npm run typecheck`                       | TypeScript static typing              | **PASS** | Exit code 0, 0 errors.                                    |
+| `npm run lint`                            | ESLint rules & directives             | **PASS** | Exit code 0, 0 warnings, 0 errors.                        |
+| `npm run format:check`                    | Prettier formatting                   | **PASS** | All matched files use Prettier style.                     |
+| `npm test`                                | Vitest unit & regression suite        | **PASS** | 27 test files, 202 tests passed, 6 skipped.               |
+| `npm run test:e2e`                        | Playwright browser smoke suite        | **PASS** | 4 tests passed across desktop and mobile.                 |
+| `npm run build`                           | Vite production bundle & PWA precache | **PASS** | Clean build in 1.11s, 33 precache entries.                |
+| `npm audit --omit=dev --audit-level=high` | Dependency security audit             | **PASS** | 0 vulnerabilities found.                                  |
+| Isolated DB Transaction Tests             | PostgREST ACLs, RLS, token integrity  | **PASS** | All 5 security assertions verified, zero persistent rows. |
+| Migration Reconciliation                  | Production vs local migration history | **PASS** | Exactly 29 migrations in DB, 29 files locally.            |
 
 ---
 
 ## H. Infrastructure and Git Cleanup Report
 
-| Resource | Finding | Evidence | Action | Risk | Verification |
-| --- | --- | --- | --- | --- | --- |
-| `.agents/`, `.claude/`, `agent/`, `.unlazy/`, `skills-lock.json` | Local agent tooling artifacts | Present in working tree as untracked files | Added to `.gitignore` | None; preserves local agent files while keeping git clean | `git status` shows clean tree |
-| `supabase/migrations/20261022222143_reconcile_authenticated_app_table_privileges.sql` | Missing local migration file | Applied in production DB but absent from disk | Recovered exact applied SQL from `schema_migrations.statements` | None; restores exact historical record | `reconcile-migrations.mjs` confirmed 29/29 match |
-| `supabase/migrations/20261023230000_restore_authenticated_invitation_creation.sql` | P0 invitation failure due to missing table grants | `42501 permission denied` on `invitation_tokens` insert | Created forward migration with pre/postflight checks; applied to production | Low; strictly bounded by existing RLS and integrity trigger | Isolated transaction test confirmed successful insert & privacy |
-| `src/test/postgrestAccessMigration.test.ts` | TS2591 compile errors | Imported `node:fs` / `node:path` in frontend tsconfig | Updated to Vite `?raw` imports matching `securityMigration.test.ts` | None; eliminates node types dependency | `npm run typecheck` passed |
-| `src/pages/app/ProfilePage.tsx` | UI blank/broken if profile read fails | Lacked retry state when profile is null | Added single-flight retry and unavailable profile error state | None; improves recovery from transient network issues | `ProfilePage.test.tsx` passed |
-| Production tables & data | Production data preservation | Inspected live schema and user profiles | Preserved 100%; zero destructive commands run | None; non-destructive release operation | Verified live tables intact |
+| Resource                                                                              | Finding                                           | Evidence                                                | Action                                                                      | Risk                                                        | Verification                                                    |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| `.agents/`, `.claude/`, `agent/`, `.unlazy/`, `skills-lock.json`                      | Local agent tooling artifacts                     | Present in working tree as untracked files              | Added to `.gitignore`                                                       | None; preserves local agent files while keeping git clean   | `git status` shows clean tree                                   |
+| `supabase/migrations/20261022222143_reconcile_authenticated_app_table_privileges.sql` | Missing local migration file                      | Applied in production DB but absent from disk           | Recovered exact applied SQL from `schema_migrations.statements`             | None; restores exact historical record                      | `reconcile-migrations.mjs` confirmed 29/29 match                |
+| `supabase/migrations/20261023230000_restore_authenticated_invitation_creation.sql`    | P0 invitation failure due to missing table grants | `42501 permission denied` on `invitation_tokens` insert | Created forward migration with pre/postflight checks; applied to production | Low; strictly bounded by existing RLS and integrity trigger | Isolated transaction test confirmed successful insert & privacy |
+| `src/test/postgrestAccessMigration.test.ts`                                           | TS2591 compile errors                             | Imported `node:fs` / `node:path` in frontend tsconfig   | Updated to Vite `?raw` imports matching `securityMigration.test.ts`         | None; eliminates node types dependency                      | `npm run typecheck` passed                                      |
+| `src/pages/app/ProfilePage.tsx`                                                       | UI blank/broken if profile read fails             | Lacked retry state when profile is null                 | Added single-flight retry and unavailable profile error state               | None; improves recovery from transient network issues       | `ProfilePage.test.tsx` passed                                   |
+| Production tables & data                                                              | Production data preservation                      | Inspected live schema and user profiles                 | Preserved 100%; zero destructive commands run                               | None; non-destructive release operation                     | Verified live tables intact                                     |
 
 ---
 
@@ -203,6 +208,7 @@
 All technical, security, database migration, build, and browser verification gates have successfully passed. The application code is production-ready.
 
 **Mandatory Operator Actions Before Public Launch:**
+
 1. Supply legal entity name and registered/business address for Privacy Policy and Terms & Conditions.
 2. Supply verified, monitored email addresses for support requests and security vulnerability reporting.
 3. Supply governing law jurisdiction for Terms & Conditions.

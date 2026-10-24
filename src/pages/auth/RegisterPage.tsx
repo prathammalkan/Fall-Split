@@ -1,14 +1,40 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../../context/AuthContext';
+import { isSafeRedirect } from '../../lib/safeRedirect';
 import { Logo } from '../../components/brand/Logo';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
 import { LegalLinks } from '../legal/LegalPages';
-import { Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, User, Eye, EyeOff, RefreshCw } from 'lucide-react';
+
+const REG_RESEND_STORAGE_KEY = 'fs_reg_resend_cd';
+
+function getStoredCooldown(): number {
+  try {
+    const raw = sessionStorage.getItem(REG_RESEND_STORAGE_KEY);
+    if (raw) {
+      const expiresAt = Number(raw);
+      if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+        return Math.ceil((expiresAt - Date.now()) / 1000);
+      }
+    }
+  } catch {
+    // Ignore storage unavailability
+  }
+  return 0;
+}
+
+function persistCooldown(seconds: number) {
+  try {
+    sessionStorage.setItem(REG_RESEND_STORAGE_KEY, String(Date.now() + seconds * 1000));
+  } catch {
+    // Ignore storage unavailability
+  }
+}
 
 const schema = z
   .object({
@@ -29,13 +55,25 @@ const schema = z
 type FormData = z.infer<typeof schema>;
 
 export function RegisterPage() {
-  const { signUp } = useAuth();
+  const { signUp, resendVerificationEmail } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState('');
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendSuccess, setResendSuccess] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
+  const [resendCooldown, setResendCooldown] = useState(() => getStoredCooldown());
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
 
   const {
     register,
@@ -48,10 +86,7 @@ export function RegisterPage() {
   const onSubmit = async (data: FormData) => {
     setError(null);
     const rawRedirect = searchParams.get('redirect');
-    const redirectTo =
-      rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//')
-        ? rawRedirect
-        : '/';
+    const redirectTo = isSafeRedirect(rawRedirect) ? rawRedirect : '/';
     if (redirectTo !== '/') {
       try {
         sessionStorage.setItem('post_auth_redirect', redirectTo);
@@ -61,12 +96,44 @@ export function RegisterPage() {
     }
     const { error } = await signUp(data.email, data.password, data.displayName, redirectTo);
     if (error) {
-      // Generic to avoid enumeration
-      setError('Could not create account. Try a different email.');
+      if (error.message?.toLowerCase().includes('rate limit') || error.message?.includes('429')) {
+        setError('Too many registration attempts. Please wait a moment before trying again.');
+      } else {
+        // Generic to avoid enumeration
+        setError('Could not create account. Please check your details or try signing in.');
+      }
       return;
     }
     setRegisteredEmail(data.email);
     setRegistered(true);
+  };
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || resendLoading || !registeredEmail) return;
+    setResendLoading(true);
+    setResendError(null);
+    setResendSuccess(false);
+
+    const rawRedirect = searchParams.get('redirect');
+    const redirectTo = isSafeRedirect(rawRedirect) ? rawRedirect : undefined;
+
+    const { error } = await resendVerificationEmail(registeredEmail, redirectTo);
+    setResendLoading(false);
+
+    if (error) {
+      if (error.message?.toLowerCase().includes('rate limit') || error.message?.includes('429')) {
+        setResendError('Please wait before requesting another verification email.');
+        setResendCooldown(60);
+        persistCooldown(60);
+      } else {
+        setResendError('Could not resend verification email. Please try again later.');
+      }
+      return;
+    }
+
+    setResendSuccess(true);
+    setResendCooldown(60);
+    persistCooldown(60);
   };
 
   if (registered) {
@@ -77,12 +144,54 @@ export function RegisterPage() {
             <Mail size={32} className="text-[rgb(var(--color-positive))]" />
           </div>
           <h1 className="text-primary mb-2 text-2xl font-bold">Verify your email</h1>
-          <p className="text-secondary mb-2">
-            We sent a verification link to <strong>{registeredEmail}</strong>.
+          <p className="text-secondary mb-2 text-sm">
+            We sent a verification link to{' '}
+            <strong className="text-primary font-semibold">{registeredEmail}</strong>.
           </p>
-          <p className="text-muted mb-6 text-sm">
-            Click the link in the email to activate your account.
+          <p className="text-muted mb-4 text-xs">
+            Open the link in your email to activate your account and start splitting expenses.
           </p>
+
+          <div className="surface border-border mb-6 rounded-lg border p-4 text-left">
+            <p className="text-secondary mb-1 text-xs font-medium">Didn't receive the email?</p>
+            <p className="text-muted mb-3 text-xs">
+              Check your spam or junk folder. If it hasn't arrived, you can request a new
+              verification link.
+            </p>
+
+            {resendSuccess && (
+              <p className="mb-2 text-xs text-[rgb(var(--color-positive))]" role="status">
+                Verification link resent! Please check your inbox.
+              </p>
+            )}
+            {resendError && (
+              <p className="mb-2 text-xs text-[rgb(var(--color-negative))]" role="alert">
+                {resendError}
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={resendLoading || resendCooldown > 0}
+              className="btn-secondary flex w-full items-center justify-center gap-2 py-2 text-xs"
+            >
+              {resendLoading ? (
+                <>
+                  <Spinner size={14} />
+                  <span>Sending...</span>
+                </>
+              ) : resendCooldown > 0 ? (
+                <span>Resend in {resendCooldown}s</span>
+              ) : (
+                <>
+                  <RefreshCw size={14} />
+                  <span>Resend verification email</span>
+                </>
+              )}
+            </button>
+          </div>
+
           <button onClick={() => navigate('/login')} className="btn-primary w-full">
             Back to sign in
           </button>

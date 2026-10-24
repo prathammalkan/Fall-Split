@@ -4,6 +4,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { db, supabase } from '../lib/supabase';
 import { completeAccountDeletion } from '../lib/accountDeletion';
 import { clearOperationsForUser } from '../lib/offlineQueue';
+import { isSafeRedirect } from '../lib/safeRedirect';
 import type { Profile } from '../types';
 
 interface AuthState {
@@ -25,6 +26,7 @@ interface AuthContextValue extends AuthState {
     displayName: string,
     redirectTo?: string
   ) => Promise<{ error: Error | null }>;
+  resendVerificationEmail: (email: string, redirectTo?: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: Error | null }>;
   updatePassword: (password: string) => Promise<{ error: Error | null }>;
@@ -36,7 +38,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 function getAuthCallbackUrl(redirectTo?: string): string {
   const callback = new URL('/auth/callback', window.location.origin);
-  if (redirectTo && redirectTo.startsWith('/') && !redirectTo.startsWith('//')) {
+  if (isSafeRedirect(redirectTo)) {
     callback.searchParams.set('redirect', redirectTo);
   }
   return callback.toString();
@@ -221,6 +223,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const resendVerificationEmail = useCallback(async (email: string, redirectTo?: string) => {
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email,
+      options: {
+        emailRedirectTo: getAuthCallbackUrl(redirectTo),
+      },
+    });
+    return { error: error as Error | null };
+  }, []);
+
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     // State cleared by auth event listener
@@ -286,6 +299,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signInWithGoogle,
     signInWithApple,
     signUp,
+    resendVerificationEmail,
     signOut,
     resetPassword,
     updatePassword,

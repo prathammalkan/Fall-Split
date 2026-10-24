@@ -10,81 +10,81 @@ Fall Split uses **Supabase PostgreSQL**. All tables have **Row Level Security (R
 
 User profile data. One row per authenticated user.
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | `uuid` | Auth identity on creation; retained as a pseudonymous ledger key after account closure |
-| `username` | `text` | Unique, lowercase, 3–30 chars |
-| `display_name` | `text` | Up to 60 chars |
-| `avatar_url` | `text?` | Public URL |
-| `bio` | `text?` | Up to 160 chars |
-| `upi_id` | `text?` | For payment reminders |
-| `created_at` | `timestamptz` | |
-| `updated_at` | `timestamptz` | |
+| Column         | Type          | Description                                                                            |
+| -------------- | ------------- | -------------------------------------------------------------------------------------- |
+| `id`           | `uuid`        | Auth identity on creation; retained as a pseudonymous ledger key after account closure |
+| `username`     | `text`        | Unique, lowercase, 3–30 chars                                                          |
+| `display_name` | `text`        | Up to 60 chars                                                                         |
+| `avatar_url`   | `text?`       | Public URL                                                                             |
+| `bio`          | `text?`       | Up to 160 chars                                                                        |
+| `upi_id`       | `text?`       | For payment reminders                                                                  |
+| `created_at`   | `timestamptz` |                                                                                        |
+| `updated_at`   | `timestamptz` |                                                                                        |
 
 ### `friend_requests`
 
 Friendship relationships and requests.
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | `uuid` | PK |
-| `sender_id` | `uuid` | References `profiles.id` |
-| `receiver_id` | `uuid` | References `profiles.id` |
-| `status` | `enum` | `pending` \| `accepted` \| `rejected` \| `cancelled` \| `blocked` |
-| `created_at` | `timestamptz` | |
-| `updated_at` | `timestamptz` | |
+| Column        | Type          | Description                                                       |
+| ------------- | ------------- | ----------------------------------------------------------------- |
+| `id`          | `uuid`        | PK                                                                |
+| `sender_id`   | `uuid`        | References `profiles.id`                                          |
+| `receiver_id` | `uuid`        | References `profiles.id`                                          |
+| `status`      | `enum`        | `pending` \| `accepted` \| `rejected` \| `cancelled` \| `blocked` |
+| `created_at`  | `timestamptz` |                                                                   |
+| `updated_at`  | `timestamptz` |                                                                   |
 
 ### `groups`
 
 Expense groups.
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | `uuid` | PK |
-| `name` | `text` | Up to 80 chars |
-| `description` | `text?` | |
-| `type` | `enum` | `trip` \| `household` \| `event` \| `custom` |
-| `currency` | `text` | Default `INR` |
-| `creator_id` | `uuid` | References `profiles.id` |
-| `archived_at` | `timestamptz?` | |
+| Column        | Type           | Description                                  |
+| ------------- | -------------- | -------------------------------------------- |
+| `id`          | `uuid`         | PK                                           |
+| `name`        | `text`         | Up to 80 chars                               |
+| `description` | `text?`        |                                              |
+| `type`        | `enum`         | `trip` \| `household` \| `event` \| `custom` |
+| `currency`    | `text`         | Default `INR`                                |
+| `creator_id`  | `uuid`         | References `profiles.id`                     |
+| `archived_at` | `timestamptz?` |                                              |
 
 ### `group_members`
 
-| Column | Type | Description |
-|---|---|---|
-| `group_id` | `uuid` | |
-| `user_id` | `uuid` | |
-| `role` | `enum` | `admin` \| `member` |
-| `invited_by` | `uuid?` | |
-| `joined_at` | `timestamptz` | |
-| `removed_at` | `timestamptz?` | Soft delete |
+| Column       | Type           | Description         |
+| ------------ | -------------- | ------------------- |
+| `group_id`   | `uuid`         |                     |
+| `user_id`    | `uuid`         |                     |
+| `role`       | `enum`         | `admin` \| `member` |
+| `invited_by` | `uuid?`        |                     |
+| `joined_at`  | `timestamptz`  |                     |
+| `removed_at` | `timestamptz?` | Soft delete         |
 
 ### `expenses`
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | `uuid` | PK |
-| `title` | `text` | |
-| `amount_paise` | `integer` | **Always in paise (integer). Never rupees float.** |
-| `currency` | `text` | Default `INR` |
-| `split_method` | `enum` | `equal` \| `unequal` \| `percentage` \| `shares` \| `itemized` \| `manual` |
-| `group_id` | `uuid?` | `null` for friend-to-friend |
-| `creator_id` | `uuid` | |
-| `expense_date` | `date` | |
-| `status` | `enum` | `active` \| `voided` \| `deleted` |
-| `idempotency_key` | `text?` | Prevents duplicate submissions |
-| `voided_at` | `timestamptz?` | |
-| `voided_by` | `uuid?` | |
+| Column            | Type           | Description                                                                |
+| ----------------- | -------------- | -------------------------------------------------------------------------- |
+| `id`              | `uuid`         | PK                                                                         |
+| `title`           | `text`         |                                                                            |
+| `amount_paise`    | `integer`      | **Always in paise (integer). Never rupees float.**                         |
+| `currency`        | `text`         | Default `INR`                                                              |
+| `split_method`    | `enum`         | `equal` \| `unequal` \| `percentage` \| `shares` \| `itemized` \| `manual` |
+| `group_id`        | `uuid?`        | `null` for friend-to-friend                                                |
+| `creator_id`      | `uuid`         |                                                                            |
+| `expense_date`    | `date`         |                                                                            |
+| `status`          | `enum`         | `active` \| `voided` \| `deleted`                                          |
+| `idempotency_key` | `text?`        | Prevents duplicate submissions                                             |
+| `voided_at`       | `timestamptz?` |                                                                            |
+| `voided_by`       | `uuid?`        |                                                                            |
 
 ### `expense_payers`
 
 Who paid how much for an expense (supports multiple payers).
 
-| Column | Type | Description |
-|---|---|---|
-| `expense_id` | `uuid` | |
-| `user_id` | `uuid` | |
-| `amount_paise` | `integer` | |
+| Column         | Type      | Description |
+| -------------- | --------- | ----------- |
+| `expense_id`   | `uuid`    |             |
+| `user_id`      | `uuid`    |             |
+| `amount_paise` | `integer` |             |
 
 Invariant: `SUM(amount_paise) = expenses.amount_paise`
 
@@ -92,13 +92,13 @@ Invariant: `SUM(amount_paise) = expenses.amount_paise`
 
 How much each participant owes for an expense.
 
-| Column | Type | Description |
-|---|---|---|
-| `expense_id` | `uuid` | |
-| `user_id` | `uuid` | |
-| `amount_paise` | `integer` | |
-| `share_weight` | `numeric?` | For shares split method |
-| `percentage` | `numeric?` | For percentage split method |
+| Column         | Type       | Description                 |
+| -------------- | ---------- | --------------------------- |
+| `expense_id`   | `uuid`     |                             |
+| `user_id`      | `uuid`     |                             |
+| `amount_paise` | `integer`  |                             |
+| `share_weight` | `numeric?` | For shares split method     |
+| `percentage`   | `numeric?` | For percentage split method |
 
 Invariant: `SUM(amount_paise) = expenses.amount_paise`
 
@@ -106,18 +106,19 @@ Invariant: `SUM(amount_paise) = expenses.amount_paise`
 
 Payment settlements between users.
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | `uuid` | PK |
-| `payer_id` | `uuid` | Who pays |
-| `recipient_id` | `uuid` | Who receives |
-| `amount_paise` | `integer` | |
-| `status` | `enum` | `proposed` \| `pending` \| `confirmed` \| `rejected` \| `disputed` \| `cancelled` |
-| `payment_method` | `text?` | e.g. `upi` |
-| `upi_ref` | `text?` | UPI transaction reference |
-| `confirmed_at` | `timestamptz?` | Set when recipient confirms |
+| Column           | Type           | Description                                                                       |
+| ---------------- | -------------- | --------------------------------------------------------------------------------- |
+| `id`             | `uuid`         | PK                                                                                |
+| `payer_id`       | `uuid`         | Who pays                                                                          |
+| `recipient_id`   | `uuid`         | Who receives                                                                      |
+| `amount_paise`   | `integer`      |                                                                                   |
+| `status`         | `enum`         | `proposed` \| `pending` \| `confirmed` \| `rejected` \| `disputed` \| `cancelled` |
+| `payment_method` | `text?`        | e.g. `upi`                                                                        |
+| `upi_ref`        | `text?`        | UPI transaction reference                                                         |
+| `confirmed_at`   | `timestamptz?` | Set when recipient confirms                                                       |
 
 **Settlement lifecycle:**
+
 ```
 proposed/pending → confirmed
              ↘ rejected/cancelled
@@ -132,27 +133,27 @@ creation. Idempotency keys prevent duplicate proposals on retries.
 
 ### `notifications`
 
-| Column | Type | Description |
-|---|---|---|
-| `user_id` | `uuid` | |
-| `type` | `enum` | e.g. `friend_request`, `expense_added`, `settlement_proposed`, ... |
-| `title` | `text` | |
-| `body` | `text` | |
-| `data` | `jsonb?` | Structured metadata |
-| `read_at` | `timestamptz?` | `null` = unread |
+| Column    | Type           | Description                                                        |
+| --------- | -------------- | ------------------------------------------------------------------ |
+| `user_id` | `uuid`         |                                                                    |
+| `type`    | `enum`         | e.g. `friend_request`, `expense_added`, `settlement_proposed`, ... |
+| `title`   | `text`         |                                                                    |
+| `body`    | `text`         |                                                                    |
+| `data`    | `jsonb?`       | Structured metadata                                                |
+| `read_at` | `timestamptz?` | `null` = unread                                                    |
 
 ### `invitation_tokens`
 
-| Column | Type | Description |
-|---|---|---|
-| `token` | `text` | Unique, random, URL-safe. Never contains private data. |
-| `type` | `enum` | `friend` \| `group` |
-| `creator_id` | `uuid` | |
-| `target_id` | `uuid?` | Group ID for group invitations |
-| `max_uses` | `integer` | Default 1 |
-| `use_count` | `integer` | |
-| `expires_at` | `timestamptz?` | |
-| `revoked_at` | `timestamptz?` | |
+| Column       | Type           | Description                                            |
+| ------------ | -------------- | ------------------------------------------------------ |
+| `token`      | `text`         | Unique, random, URL-safe. Never contains private data. |
+| `type`       | `enum`         | `friend` \| `group`                                    |
+| `creator_id` | `uuid`         |                                                        |
+| `target_id`  | `uuid?`        | Group ID for group invitations                         |
+| `max_uses`   | `integer`      | Default 1                                              |
+| `use_count`  | `integer`      |                                                        |
+| `expires_at` | `timestamptz?` |                                                        |
+| `revoked_at` | `timestamptz?` |                                                        |
 
 ## Financial Invariants
 
@@ -198,28 +199,28 @@ requires authentication and server-side token validation.
 
 ## Migrations
 
-| File | Description |
-|---|---|
-| `001_core_schema.sql` | All tables, indexes, triggers |
-| `002_rls_policies.sql` | Row Level Security policies |
-| `003_functions.sql` | Server-side RPCs |
-| `004_settlements_rejected_at.sql` | Rejection timestamps and constraint |
-| `005_fix_friend_balances.sql` | Multi-payer friend balance calculation |
-| `006_fix_accept_invitation_and_group_balances.sql` | Invitation acceptance and group balances |
-| `007_sync_schema_columns.sql` | Schema/type synchronization |
-| `008_delete_account_rpc.sql` | Account anonymization RPC |
-| `009_settlement_integrity.sql` | Atomic debt-validated settlement lifecycle |
-| `010_invitation_preview.sql` | Safe pre-auth invitation preview and token privacy |
-| `011_group_balance_membership_guard.sql` | Group membership enforcement in balance RPC |
-| `012_security_definer_hardening.sql` | Security-definer search paths and grants |
-| `013_security_financial_reconciliation.sql` | Caller-bound helpers, financial reconciliation, and balance RPCs |
-| `014_active_account_enforcement.sql` | Active-account RLS and write enforcement |
-| `015_relationship_authorization.sql` | Friend-request and group-invitation authorization |
-| `016_atomic_expense_creation.sql` | Idempotent atomic expense, payer, and share writes |
-| `017_fix_expense_participant_visibility.sql` | Bind participant visibility to the outer expense |
-| `018_atomic_itemized_expense_creation.sql` | Atomic itemized records and retry reconciliation |
-| `20261021223159_preserve_anonymized_ledger_identity.sql` | Detach Auth identity deletion from retained pseudonymized ledger profiles |
-| `20261021225434_revoke_excessive_app_table_privileges.sql` | Remove anonymous table access and RLS-bypassing table privileges |
+| File                                                       | Description                                                               |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `001_core_schema.sql`                                      | All tables, indexes, triggers                                             |
+| `002_rls_policies.sql`                                     | Row Level Security policies                                               |
+| `003_functions.sql`                                        | Server-side RPCs                                                          |
+| `004_settlements_rejected_at.sql`                          | Rejection timestamps and constraint                                       |
+| `005_fix_friend_balances.sql`                              | Multi-payer friend balance calculation                                    |
+| `006_fix_accept_invitation_and_group_balances.sql`         | Invitation acceptance and group balances                                  |
+| `007_sync_schema_columns.sql`                              | Schema/type synchronization                                               |
+| `008_delete_account_rpc.sql`                               | Account anonymization RPC                                                 |
+| `009_settlement_integrity.sql`                             | Atomic debt-validated settlement lifecycle                                |
+| `010_invitation_preview.sql`                               | Safe pre-auth invitation preview and token privacy                        |
+| `011_group_balance_membership_guard.sql`                   | Group membership enforcement in balance RPC                               |
+| `012_security_definer_hardening.sql`                       | Security-definer search paths and grants                                  |
+| `013_security_financial_reconciliation.sql`                | Caller-bound helpers, financial reconciliation, and balance RPCs          |
+| `014_active_account_enforcement.sql`                       | Active-account RLS and write enforcement                                  |
+| `015_relationship_authorization.sql`                       | Friend-request and group-invitation authorization                         |
+| `016_atomic_expense_creation.sql`                          | Idempotent atomic expense, payer, and share writes                        |
+| `017_fix_expense_participant_visibility.sql`               | Bind participant visibility to the outer expense                          |
+| `018_atomic_itemized_expense_creation.sql`                 | Atomic itemized records and retry reconciliation                          |
+| `20261021223159_preserve_anonymized_ledger_identity.sql`   | Detach Auth identity deletion from retained pseudonymized ledger profiles |
+| `20261021225434_revoke_excessive_app_table_privileges.sql` | Remove anonymous table access and RLS-bypassing table privileges          |
 
 Apply migrations only through the supported Supabase CLI workflow after
 reconciling existing migration history, verifying a recoverable backup, and

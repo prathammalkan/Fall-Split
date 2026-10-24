@@ -68,30 +68,117 @@ export function ProfilePage() {
     });
   }, [profile, editMode, reset]);
 
+  const handleCancel = () => {
+    if (profile) {
+      reset({
+        display_name: profile.display_name,
+        username: profile.username,
+        bio: profile.bio ?? '',
+        upi_id: profile.upi_id ?? '',
+      });
+    }
+    setError(null);
+    setEditMode(false);
+  };
+
   const onSave = async (data: ProfileForm) => {
-    if (!user) return;
+    if (!user || saving) return;
     setSaving(true);
     setError(null);
-    const { error: updateError } = await db
-      .from('profiles')
-      .update({
-        display_name: data.display_name,
-        username: data.username.toLowerCase(),
-        bio: data.bio ?? null,
-        upi_id: data.upi_id ?? null,
-      })
-      .eq('id', user.id);
-    setSaving(false);
-    if (updateError) {
-      setError(
-        updateError.message.includes('unique')
-          ? 'Username already taken.'
-          : 'Failed to save profile.'
-      );
-      return;
+
+    const cleanDisplayName = data.display_name.trim();
+    const cleanUsername = data.username.trim().toLowerCase();
+    const cleanBio = data.bio?.trim() || null;
+    const cleanUpiId = data.upi_id?.trim() || null;
+
+    let writeSucceeded = false;
+
+    try {
+      const { error: updateError } = await db
+        .from('profiles')
+        .update({
+          display_name: cleanDisplayName,
+          username: cleanUsername,
+          bio: cleanBio,
+          upi_id: cleanUpiId,
+        })
+        .eq('id', user.id);
+
+      if (updateError) {
+        if (import.meta.env.DEV) {
+          console.error('[ProfilePage] Profile update failed:', {
+            code: updateError.code,
+            message: updateError.message,
+            details: updateError.details,
+            hint: updateError.hint,
+          });
+        }
+
+        const msg = updateError.message || '';
+        const code = updateError.code || '';
+
+        if (code === '23505' || msg.includes('unique') || msg.includes('already exists')) {
+          setError('Username already taken. Please choose another.');
+        } else if (code === '23514' && (msg.includes('upi_id') || msg.includes('upi_id_format'))) {
+          setError('Invalid UPI ID format. Use name@bank or leave blank.');
+        } else if (
+          code === '23514' &&
+          (msg.includes('username') || msg.includes('username_format'))
+        ) {
+          setError(
+            'Username must be 3–30 characters with lowercase letters, numbers, or underscores.'
+          );
+        } else if (
+          code === '23514' &&
+          (msg.includes('display_name') || msg.includes('display_name_length'))
+        ) {
+          setError('Display name must be between 1 and 60 characters.');
+        } else if (code === '42501' || msg.includes('permission denied')) {
+          setError('You do not have permission to update this profile.');
+        } else if (
+          msg.includes('network') ||
+          msg.includes('fetch') ||
+          msg.includes('Failed to fetch')
+        ) {
+          setError('Network error. Please check your connection and try again.');
+        } else {
+          setError('Failed to save profile. Please check your inputs and try again.');
+        }
+        return;
+      }
+
+      writeSucceeded = true;
+
+      try {
+        await refreshProfile();
+        setEditMode(false);
+      } catch (refreshErr) {
+        if (import.meta.env.DEV) {
+          console.error('[ProfilePage] Profile updated but refresh failed:', refreshErr);
+        }
+        setError(
+          'Profile changes were saved, but your view could not be refreshed. Please reload the page.'
+        );
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.error('[ProfilePage] Unexpected error during profile save:', err);
+      }
+      if (writeSucceeded) {
+        setError(
+          'Profile changes were saved, but your view could not be refreshed. Please reload the page.'
+        );
+      } else {
+        const errMessage = err instanceof Error ? err.message : '';
+        if (errMessage.includes('network') || errMessage.includes('fetch')) {
+          setError('Network error. Please check your connection and try again.');
+        } else {
+          setError('An unexpected error occurred while saving your profile. Please try again.');
+        }
+      }
+    } finally {
+      setSaving(false);
     }
-    await refreshProfile();
-    setEditMode(false);
   };
 
   const handleDeleteAccount = async () => {
@@ -153,7 +240,16 @@ export function ProfilePage() {
             )}
           </div>
           {!deletionBlocked && profile && (
-            <button onClick={() => setEditMode(!editMode)} className="btn-secondary">
+            <button
+              onClick={() => {
+                if (editMode) {
+                  handleCancel();
+                } else {
+                  setEditMode(true);
+                }
+              }}
+              className="btn-secondary"
+            >
               {editMode ? 'Cancel' : 'Edit profile'}
             </button>
           )}
@@ -163,7 +259,7 @@ export function ProfilePage() {
           <form onSubmit={handleSubmit(onSave)} className="card mb-6 space-y-4">
             <div>
               <label className="text-secondary mb-1 block text-sm font-medium">Display name</label>
-              <input {...register('display_name')} className="input" />
+              <input {...register('display_name')} className="input" aria-label="Display name" />
               {errors.display_name && (
                 <p className="mt-1 text-xs text-[rgb(var(--color-negative))]">
                   {errors.display_name.message}
@@ -172,7 +268,7 @@ export function ProfilePage() {
             </div>
             <div>
               <label className="text-secondary mb-1 block text-sm font-medium">Username</label>
-              <input {...register('username')} className="input" />
+              <input {...register('username')} className="input" aria-label="Username" />
               {errors.username && (
                 <p className="mt-1 text-xs text-[rgb(var(--color-negative))]">
                   {errors.username.message}
@@ -181,7 +277,7 @@ export function ProfilePage() {
             </div>
             <div>
               <label className="text-secondary mb-1 block text-sm font-medium">Bio</label>
-              <textarea {...register('bio')} className="input" rows={2} />
+              <textarea {...register('bio')} className="input" rows={2} aria-label="Bio" />
             </div>
             <div>
               <label className="text-secondary mb-1 block text-sm font-medium">UPI ID</label>
@@ -190,6 +286,7 @@ export function ProfilePage() {
                 className="input"
                 placeholder="yourname@upi"
                 autoComplete="off"
+                aria-label="UPI ID"
               />
               {errors.upi_id && (
                 <p className="mt-1 text-xs text-[rgb(var(--color-negative))]">

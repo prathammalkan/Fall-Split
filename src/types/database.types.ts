@@ -156,7 +156,14 @@ export type Database = {
           category: string | null;
           notes: string | null;
           receipt_url: string | null;
-          status: 'active' | 'voided' | 'deleted';
+          status:
+            | 'active'
+            | 'voided'
+            | 'deleted'
+            | 'pending_approval'
+            | 'disputed'
+            | 'confirmed'
+            | 'cancelled';
           idempotency_key: string | null;
           created_at: string;
           updated_at: string;
@@ -308,6 +315,36 @@ export type Database = {
           changed_at?: string;
         };
         Update: Record<string, never>;
+      };
+      expense_approvals: {
+        Row: {
+          id: string;
+          expense_id: string;
+          user_id: string;
+          status: 'pending' | 'approved' | 'disputed';
+          dispute_reason: string | null;
+          dispute_category: string | null;
+          created_at: string;
+          updated_at: string;
+          responded_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          expense_id: string;
+          user_id: string;
+          status?: 'pending' | 'approved' | 'disputed';
+          dispute_reason?: string | null;
+          dispute_category?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          responded_at?: string | null;
+        };
+        Update: {
+          status?: 'pending' | 'approved' | 'disputed';
+          dispute_reason?: string | null;
+          dispute_category?: string | null;
+          responded_at?: string | null;
+        };
       };
       settlements: {
         Row: {
@@ -603,6 +640,15 @@ export type Database = {
         Args: { p_settlement_id: string };
         Returns: string;
       };
+      respond_to_expense_approval: {
+        Args: {
+          p_expense_id: string;
+          p_action: 'approve' | 'dispute';
+          p_dispute_reason?: string | null;
+          p_dispute_category?: string | null;
+        };
+        Returns: Json;
+      };
     };
     Enums: {
       friendship_status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'blocked';
@@ -610,7 +656,14 @@ export type Database = {
       group_type: 'trip' | 'household' | 'event' | 'custom';
       member_role: 'admin' | 'member';
       split_method: 'equal' | 'unequal' | 'percentage' | 'shares' | 'itemized' | 'manual';
-      expense_status: 'active' | 'voided' | 'deleted';
+      expense_status:
+        | 'active'
+        | 'voided'
+        | 'deleted'
+        | 'pending_approval'
+        | 'disputed'
+        | 'confirmed'
+        | 'cancelled';
       settlement_status:
         'proposed' | 'pending' | 'confirmed' | 'rejected' | 'disputed' | 'cancelled';
       notification_type:

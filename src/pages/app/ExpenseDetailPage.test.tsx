@@ -140,9 +140,7 @@ describe('ExpenseDetailPage owner-only deletion', () => {
     fireEvent.click(deleteBtn);
 
     // Confirmation dialog appears with exact title and formatted amount
-    expect(
-      screen.getByText(/Delete “Dinner at Taj” \(₹2,500\.00\)\?/)
-    ).toBeTruthy();
+    expect(screen.getByText(/Delete “Dinner at Taj” \(₹2,500\.00\)\?/)).toBeTruthy();
     expect(screen.getByRole('alertdialog')).toBeTruthy();
 
     // Cancel leaves the expense untouched
@@ -210,7 +208,9 @@ describe('ExpenseDetailPage owner-only deletion', () => {
   it('handles backend rejection safely: keeps expense in view and displays error message', async () => {
     mocks.rpc.mockResolvedValue({
       data: null,
-      error: { message: 'Cannot delete expense while a related settlement is pending confirmation' },
+      error: {
+        message: 'Cannot delete expense while a related settlement is pending confirmation',
+      },
     });
 
     renderPage();

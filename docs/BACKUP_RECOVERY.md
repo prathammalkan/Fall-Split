@@ -49,13 +49,13 @@ Fall Split supports CSV export of expense history (from the Activity or Group De
 
 ## Disaster Recovery
 
-| Scenario | Recovery action |
-|---|---|
-| Accidental row deletion | Verify an available backup and restore point first; no backup was retained for the completed production wipe |
-| Schema migration error | Hold the maintenance barrier and apply a reviewed forward corrective migration after recovery assessment |
-| Auth provider misconfiguration | Fix in Supabase dashboard; users can still log in via email |
-| Vercel deployment broken | Revert to previous deployment in Vercel dashboard |
-| Environment variables lost | Recreate from Supabase dashboard; no data loss |
+| Scenario                       | Recovery action                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Accidental row deletion        | Verify an available backup and restore point first; no backup was retained for the completed production wipe |
+| Schema migration error         | Hold the maintenance barrier and apply a reviewed forward corrective migration after recovery assessment     |
+| Auth provider misconfiguration | Fix in Supabase dashboard; users can still log in via email                                                  |
+| Vercel deployment broken       | Revert to previous deployment in Vercel dashboard                                                            |
+| Environment variables lost     | Recreate from Supabase dashboard; no data loss                                                               |
 
 ## Recovery Time Objectives
 

@@ -9,7 +9,7 @@ describe('legal and support routes', () => {
     ['/privacy', 'Privacy Policy'],
     ['/terms', 'Terms & Conditions'],
     ['/support', 'Contact & Support'],
-  ])('renders %s with an explicit pre-release notice', async (path, title) => {
+  ])('renders %s with private-use project notice', async (path, title) => {
     render(
       <MemoryRouter initialEntries={[path]}>
         <AuthProvider>
@@ -19,7 +19,7 @@ describe('legal and support routes', () => {
     );
 
     expect(await screen.findByRole('heading', { name: title })).toBeTruthy();
-    expect(screen.getByText(/replace every bracketed placeholder/i)).toBeTruthy();
+    expect(screen.getByText(/private-use expense-sharing application/i)).toBeTruthy();
     expect(screen.getByRole('navigation', { name: 'Legal and support' })).toBeTruthy();
   });
 });
