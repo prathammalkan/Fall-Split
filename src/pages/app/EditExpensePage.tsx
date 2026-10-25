@@ -66,7 +66,7 @@ export function EditExpensePage() {
         )
         .eq('id', expenseId)
         .eq('creator_id', user.id)
-        .eq('status', 'active')
+        .in('status', ['active', 'confirmed', 'pending_approval', 'disputed'])
         .single();
       if (loadErr) {
         setLoadError(
@@ -176,6 +176,9 @@ export function EditExpensePage() {
   const newAmount = parseINR(amountStr) ?? 0;
   const amountChanged = newAmount > 0 && newAmount !== original.amount_paise;
   const isNonEqualSplit = original.split_method !== 'equal' && original.expense_shares.length > 0;
+  const hasOtherParticipants = original.expense_shares.some(
+    (s) => s.user_id !== original.creator_id
+  );
   const canSave = !isNonEqualSplit || !amountChanged;
 
   return (
@@ -266,6 +269,16 @@ export function EditExpensePage() {
               ⚠ This expense uses a "{original.split_method}" split. Changing the amount requires
               recreating the expense so all participant shares can be correctly recalculated. To
               keep this expense, restore the original amount ({formatINR(original.amount_paise)}).
+            </p>
+          </div>
+        )}
+
+        {hasOtherParticipants && (
+          <div className="rounded-xl border border-[rgb(var(--color-pending)/0.3)] bg-[rgb(var(--color-pending)/0.08)] p-3">
+            <p className="text-xs font-medium text-[rgb(var(--color-pending))]">
+              ⚠ Approval Requirement: Saving changes will reset this expense to pending approval.
+              All other participants will need to review and re-approve their shares before it
+              affects confirmed balances.
             </p>
           </div>
         )}

@@ -170,6 +170,11 @@ export function ExpenseDetailPage() {
 
   const handleDispute = async () => {
     if (!expense || !user) return;
+    const cleanReason = disputeReason.trim();
+    if (cleanReason.length < 3) {
+      setApprovalError('A valid dispute reason of at least 3 characters is required.');
+      return;
+    }
     setDisputing(true);
     setApprovalError(null);
     try {
@@ -177,7 +182,7 @@ export function ExpenseDetailPage() {
         p_expense_id: expense.id,
         p_action: 'dispute',
         p_dispute_category: disputeCategory,
-        p_dispute_reason: disputeReason.trim() || null,
+        p_dispute_reason: cleanReason,
       })) as { error: { message: string } | null };
 
       if (err) {
@@ -580,15 +585,19 @@ export function ExpenseDetailPage() {
               </div>
               <div>
                 <label className="text-muted mb-1 block text-xs">
-                  Additional details (optional)
+                  Reason for dispute <span className="text-[rgb(var(--color-negative))]">*</span>
                 </label>
                 <textarea
                   value={disputeReason}
                   onChange={(e) => setDisputeReason(e.target.value)}
                   className="input min-h-[80px] w-full text-sm"
-                  placeholder="Explain what needs to be corrected..."
+                  placeholder="Explain what needs to be corrected (minimum 3 characters)..."
                   maxLength={500}
                 />
+                <p className="text-muted mt-1 text-[11px]">
+                  Provide a specific explanation so other participants understand why this expense
+                  is disputed.
+                </p>
               </div>
               {approvalError && <ErrorMessage message={approvalError} />}
               <div className="flex gap-2 pt-2">
@@ -604,7 +613,7 @@ export function ExpenseDetailPage() {
                   type="button"
                   onClick={() => void handleDispute()}
                   className="btn-danger inline-flex flex-1 items-center justify-center gap-1.5"
-                  disabled={disputing || !disputeCategory}
+                  disabled={disputing || !disputeCategory || disputeReason.trim().length < 3}
                 >
                   {disputing ? <Spinner size={16} /> : null} Submit dispute
                 </button>

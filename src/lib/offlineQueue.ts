@@ -44,6 +44,58 @@ export interface SyncSummary {
   errors: SyncFailure[];
 }
 
+export const QUEUE_WARNING_THRESHOLD = 100;
+
+export interface QueueWarningState {
+  isApproachingLimit: boolean;
+  count: number;
+  threshold: number;
+  message: string | null;
+}
+
+export async function checkQueueWarning(userId: string): Promise<QueueWarningState> {
+  if (!userId) {
+    return {
+      isApproachingLimit: false,
+      count: 0,
+      threshold: QUEUE_WARNING_THRESHOLD,
+      message: null,
+    };
+  }
+  const pending = await getPendingOperations(userId);
+  const count = pending.length;
+  const isApproachingLimit = count >= QUEUE_WARNING_THRESHOLD;
+  return {
+    isApproachingLimit,
+    count,
+    threshold: QUEUE_WARNING_THRESHOLD,
+    message: isApproachingLimit
+      ? `You have ${count} queued offline operations. Please reconnect to sync before adding more, to prevent local storage constraints.`
+      : null,
+  };
+}
+
+export const BASE_RETRY_DELAY_MS = 1000;
+export const MAX_RETRY_DELAY_MS = 30000;
+
+export function calculateRetryDelay(
+  retryCount: number,
+  randomFn: () => number = Math.random
+): number {
+  if (!Number.isFinite(retryCount) || retryCount <= 0) return BASE_RETRY_DELAY_MS;
+  const boundedCount = Math.min(Math.floor(retryCount), 10);
+  const exponential = Math.min(MAX_RETRY_DELAY_MS, BASE_RETRY_DELAY_MS * Math.pow(2, boundedCount));
+  let rand: number;
+  try {
+    const r = randomFn();
+    rand = Number.isFinite(r) ? Math.min(Math.max(r, 0), 1) : 0;
+  } catch {
+    rand = 0;
+  }
+  const jitter = Math.floor(rand * (exponential * 0.2));
+  return Math.max(BASE_RETRY_DELAY_MS, Math.min(MAX_RETRY_DELAY_MS + 2000, exponential + jitter));
+}
+
 function getPayloadOwnerId(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
   if (!('creator_id' in payload) || typeof payload.creator_id !== 'string') return null;
@@ -345,7 +397,26 @@ async function syncOperation(
   }
 
   const { data: expenseId, error } = response;
-  if (error) return { success: false, error: error.message };
+  if (error) {
+    const errorMsg = error.message || '';
+    const isPermanent =
+      (error as { code?: string }).code === '42501' ||
+      (error as { code?: string }).code === '23505' ||
+      (error as { code?: string }).code === '23503' ||
+      (error as { code?: string }).code === '23514' ||
+      (error as { code?: string }).code === 'P0001' ||
+      /not a member|membership has ended|idempotency key was already used for different details|must be between|Payer contributions must|Shares must|Participant shares must|Active authenticated account required|Group does not exist/i.test(
+        errorMsg
+      );
+    if (isPermanent) {
+      return {
+        success: false,
+        conflict: true,
+        conflictInfo: { reason: errorMsg },
+      };
+    }
+    return { success: false, error: errorMsg };
+  }
   if (typeof expenseId !== 'string' || !expenseId) {
     return { success: false, error: 'Expense synchronization returned no verified server ID' };
   }
@@ -353,44 +424,71 @@ async function syncOperation(
   return { success: true, serverId: expenseId };
 }
 
+let isSyncInProgress = false;
+
 export async function syncPendingOperations(
   supabaseClient: import('@supabase/supabase-js').SupabaseClient
 ): Promise<SyncSummary> {
   const summary: SyncSummary = { synced: 0, failed: 0, conflicts: 0, errors: [] };
-  const {
-    data: { user },
-    error: authError,
-  } = await supabaseClient.auth.getUser();
-  if (authError || !user) return summary;
-  const pending = await getPendingOperations(user.id);
+  if (isSyncInProgress) {
+    return summary;
+  }
+  isSyncInProgress = true;
+  try {
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+    if (authError || !user) return summary;
+    const pending = await getPendingOperations(user.id);
 
-  for (const op of pending) {
-    await updateOperationState(op.id, 'syncing');
-    try {
-      const result = await syncOperation(op, supabaseClient);
-      if (result.success && result.serverId) {
-        await markOperationSynced(op.id, result.serverId);
-        summary.synced++;
-      } else if (result.conflict) {
-        const message =
-          typeof result.conflictInfo === 'object' &&
-          result.conflictInfo !== null &&
-          'reason' in result.conflictInfo
-            ? String(result.conflictInfo.reason)
-            : 'Queued operation conflicts with current account or server state';
-        await updateOperationState(op.id, 'conflict', {
-          conflictInfo: result.conflictInfo,
-          lastError: message,
-        });
-        summary.conflicts++;
-        summary.errors.push({
-          id: op.id,
-          idempotencyKey: op.idempotencyKey,
-          message,
-          conflict: true,
-        });
-      } else {
-        const message = result.error ?? 'Expense synchronization failed without an error message';
+    const db = await getDB();
+    for (const op of pending) {
+      const currentOp = await db.get(STORE_NAME, op.id);
+      if (!currentOp || currentOp.state === 'synced' || currentOp.state === 'conflict') {
+        continue;
+      }
+
+      await updateOperationState(op.id, 'syncing');
+      try {
+        const result = await syncOperation(op, supabaseClient);
+        if (result.success && result.serverId) {
+          await markOperationSynced(op.id, result.serverId);
+          summary.synced++;
+        } else if (result.conflict) {
+          const message =
+            typeof result.conflictInfo === 'object' &&
+            result.conflictInfo !== null &&
+            'reason' in result.conflictInfo
+              ? String(result.conflictInfo.reason)
+              : 'Queued operation conflicts with current account or server state';
+          await updateOperationState(op.id, 'conflict', {
+            conflictInfo: result.conflictInfo,
+            lastError: message,
+          });
+          summary.conflicts++;
+          summary.errors.push({
+            id: op.id,
+            idempotencyKey: op.idempotencyKey,
+            message,
+            conflict: true,
+          });
+        } else {
+          const message = result.error ?? 'Expense synchronization failed without an error message';
+          await updateOperationState(op.id, 'failed', {
+            lastError: message,
+            retryCount: op.retryCount + 1,
+          });
+          summary.failed++;
+          summary.errors.push({
+            id: op.id,
+            idempotencyKey: op.idempotencyKey,
+            message,
+            conflict: false,
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown synchronization error';
         await updateOperationState(op.id, 'failed', {
           lastError: message,
           retryCount: op.retryCount + 1,
@@ -403,21 +501,10 @@ export async function syncPendingOperations(
           conflict: false,
         });
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown synchronization error';
-      await updateOperationState(op.id, 'failed', {
-        lastError: message,
-        retryCount: op.retryCount + 1,
-      });
-      summary.failed++;
-      summary.errors.push({
-        id: op.id,
-        idempotencyKey: op.idempotencyKey,
-        message,
-        conflict: false,
-      });
     }
-  }
 
-  return summary;
+    return summary;
+  } finally {
+    isSyncInProgress = false;
+  }
 }

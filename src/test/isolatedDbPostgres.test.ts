@@ -345,5 +345,173 @@ describeIfLocalDb(
         await client.end();
       }
     });
+
+    it('enforces creator self-approval rejection, non-participant rejection, non-creator deletion rejection, settlement rejection, and idempotency bounds', async () => {
+      const client = createLocalTestClient();
+      if (!client) return;
+      await client.connect();
+
+      const aliceId = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+      const bobId = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
+      const charlieId = 'cccccccc-cccc-4ccc-cccc-cccccccccccc';
+
+      await client.query('BEGIN');
+      try {
+        await client.query(`
+          INSERT INTO public.profiles (id, username, display_name)
+          VALUES 
+            ('${aliceId}', 'alice_test', 'Alice Test'),
+            ('${bobId}', 'bob_test', 'Bob Test'),
+            ('${charlieId}', 'charlie_test', 'Charlie Test')
+          ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name, deleted_at = NULL;
+        `);
+
+        // 1. Alice creates an expense with Bob as participant
+        await client.query(`SET LOCAL request.jwt.claim.sub = '${aliceId}'`);
+        const idempKey = 'idemp-auth-test-' + Date.now();
+        const expensePayload = {
+          creator_id: aliceId,
+          idempotency_key: idempKey,
+          title: 'Concert Tickets',
+          amount_paise: 4000,
+          currency: 'INR',
+          split_method: 'equal',
+          expense_date: '2026-10-24',
+        };
+        const payersPayload = [{ userId: aliceId, amountPaise: 4000 }];
+        const sharesPayload = [
+          { userId: aliceId, amountPaise: 2000 },
+          { userId: bobId, amountPaise: 2000 },
+        ];
+
+        const createRes = await client.query(
+          `SELECT public.create_expense_with_records($1::jsonb, $2::jsonb, $3::jsonb) AS expense_id`,
+          [
+            JSON.stringify(expensePayload),
+            JSON.stringify(payersPayload),
+            JSON.stringify(sharesPayload),
+          ]
+        );
+        const expenseId = createRes.rows[0].expense_id;
+
+        // 2. Creator self-approval rejection: Alice attempts to approve her own expense
+        let selfApprovalError: Error | null = null;
+        await client.query('SAVEPOINT sp_self_app');
+        try {
+          await client.query(`SELECT public.respond_to_expense_approval($1, 'approve')`, [
+            expenseId,
+          ]);
+        } catch (err) {
+          selfApprovalError = err as Error;
+          await client.query('ROLLBACK TO SAVEPOINT sp_self_app');
+        }
+        expect(selfApprovalError).not.toBeNull();
+        expect(selfApprovalError?.message).toContain(
+          'You are not a required participant for this expense approval'
+        );
+
+        // 3. Unauthorized non-participant approval rejection: Charlie attempts to approve
+        await client.query(`SET LOCAL request.jwt.claim.sub = '${charlieId}'`);
+        let charlieApprovalError: Error | null = null;
+        await client.query('SAVEPOINT sp_charlie_app');
+        try {
+          await client.query(`SELECT public.respond_to_expense_approval($1, 'approve')`, [
+            expenseId,
+          ]);
+        } catch (err) {
+          charlieApprovalError = err as Error;
+          await client.query('ROLLBACK TO SAVEPOINT sp_charlie_app');
+        }
+        expect(charlieApprovalError).not.toBeNull();
+        expect(charlieApprovalError?.message).toContain(
+          'You are not a required participant for this expense approval'
+        );
+
+        // 4. Deletion rejection by non-creator: Bob attempts to delete Alice's expense
+        await client.query(`SET LOCAL request.jwt.claim.sub = '${bobId}'`);
+        let bobDeleteError: Error | null = null;
+        await client.query('SAVEPOINT sp_bob_del');
+        try {
+          await client.query('SELECT public.delete_expense($1)', [expenseId]);
+        } catch (err) {
+          bobDeleteError = err as Error;
+          await client.query('ROLLBACK TO SAVEPOINT sp_bob_del');
+        }
+        expect(bobDeleteError).not.toBeNull();
+        expect(bobDeleteError?.message).toContain(
+          'Only the expense creator may delete this expense'
+        );
+
+        // 5. Bob attempts to approve invalid action or dispute
+        await client.query(`SET LOCAL request.jwt.claim.sub = '${bobId}'`);
+
+        // 6. Bob approves expense
+        await client.query(`SELECT public.respond_to_expense_approval($1, 'approve')`, [expenseId]);
+
+        // 7. Settlement reporting and REJECTION: Bob proposes settlement
+        const settleRes = await client.query(
+          `SELECT public.propose_settlement($1, $2, $3) AS settlement_id`,
+          [aliceId, 2000, 'settle-reject-idemp-' + Date.now()]
+        );
+        const settlementId = settleRes.rows[0].settlement_id;
+
+        // Alice rejects settlement
+        await client.query(`SET LOCAL request.jwt.claim.sub = '${aliceId}'`);
+        await client.query(`SELECT public.respond_to_settlement($1, 'reject')`, [settlementId]);
+
+        const settleRow = await client.query(
+          'SELECT status FROM public.settlements WHERE id = $1',
+          [settlementId]
+        );
+        expect(settleRow.rows[0].status).toBe('rejected');
+
+        // Balance invariant: rejected settlement does NOT reduce debt!
+        const balAfterReject = await client.query(
+          `SELECT net_paise FROM public.get_friend_balances() WHERE other_user_id = $1`,
+          [bobId]
+        );
+        expect(Number(balAfterReject.rows[0].net_paise)).toBe(2000);
+
+        // 8. Idempotency replay check: Alice resubmits with identical idempotency key -> returns same expense ID
+        const retryRes = await client.query(
+          `SELECT public.create_expense_with_records($1::jsonb, $2::jsonb, $3::jsonb) AS expense_id`,
+          [
+            JSON.stringify(expensePayload),
+            JSON.stringify(payersPayload),
+            JSON.stringify(sharesPayload),
+          ]
+        );
+        expect(retryRes.rows[0].expense_id).toBe(expenseId);
+
+        // Conflicting replay with different amount -> throws collision error
+        const conflictingPayers = [{ userId: aliceId, amountPaise: 9999 }];
+        const conflictingShares = [
+          { userId: aliceId, amountPaise: 5000 },
+          { userId: bobId, amountPaise: 4999 },
+        ];
+        let conflictError: Error | null = null;
+        await client.query('SAVEPOINT sp_conflict');
+        try {
+          await client.query(
+            `SELECT public.create_expense_with_records($1::jsonb, $2::jsonb, $3::jsonb) AS expense_id`,
+            [
+              JSON.stringify({ ...expensePayload, amount_paise: 9999 }),
+              JSON.stringify(conflictingPayers),
+              JSON.stringify(conflictingShares),
+            ]
+          );
+        } catch (err) {
+          conflictError = err as Error;
+          await client.query('ROLLBACK TO SAVEPOINT sp_conflict');
+        }
+        expect(conflictError).not.toBeNull();
+        expect(conflictError?.message).toContain(
+          'Expense idempotency key was already used for different details'
+        );
+      } finally {
+        await client.query('ROLLBACK');
+        await client.end();
+      }
+    });
   }
 );

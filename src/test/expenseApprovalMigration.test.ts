@@ -134,4 +134,23 @@ describe('Participant expense approval migration contract', () => {
       'DELETE FROM public.expense_approvals WHERE expense_id = p_expense_id;'
     );
   });
+
+  it('hardens permissions and validates resource abuse limits on RPCs', () => {
+    // Permission revocations
+    expect(migration).toContain(
+      'REVOKE ALL ON FUNCTION public.expense_pair_allocations(UUID, UUID) FROM PUBLIC, anon, authenticated;'
+    );
+    expect(migration).toContain(
+      'REVOKE ALL ON FUNCTION public.create_expense_with_records(JSONB, JSONB, JSONB) FROM PUBLIC, anon;'
+    );
+    expect(migration).toContain(
+      'GRANT EXECUTE ON FUNCTION public.create_expense_with_records(JSONB, JSONB, JSONB) TO authenticated;'
+    );
+
+    // Resource abuse and numeric bounds
+    expect(migration).toContain('v_amount_paise > 100000000000');
+    expect(migration).toContain('v_share_count > 100 OR v_payer_count > 50');
+    expect(migration).toContain('A valid dispute reason is required');
+    expect(migration).toContain('Dispute details exceed maximum allowed length');
+  });
 });

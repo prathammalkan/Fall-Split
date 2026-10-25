@@ -102,6 +102,7 @@ export function AddExpensePage() {
   const [category, setCategory] = useState('');
   const [notes, setNotes] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const submissionKey = useRef<{ fingerprint: string; key: string } | null>(null);
   const [submissionSuccess, setSubmissionSuccess] = useState<{
     id: string;
@@ -483,6 +484,37 @@ export function AddExpensePage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleOpenConfirmation = () => {
+    if (!user || contactsLoading || contactsError) return;
+    setError(null);
+    if (!title.trim()) {
+      setError('Please enter a title.');
+      return;
+    }
+    if (totalPaise <= 0) {
+      setError('Please enter a valid amount.');
+      return;
+    }
+    if (participants.length === 0) {
+      setError('Select at least one participant.');
+      return;
+    }
+
+    const currentAllocations = computeAllocations();
+    if (!currentAllocations) {
+      setError('Could not compute split. Check your inputs.');
+      return;
+    }
+
+    const payerAmounts = validatePayers();
+    if (!payerAmounts) {
+      setError('Payer contributions do not add up to the expense total.');
+      return;
+    }
+
+    setShowConfirmModal(true);
   };
 
   const allocations = computeAllocations();
@@ -1027,13 +1059,80 @@ export function AddExpensePage() {
           {error && <ErrorMessage message={error} />}
 
           <button
-            onClick={() => void handleSave()}
+            type="button"
+            onClick={handleOpenConfirmation}
             className="btn-primary w-full"
             disabled={saving || contactsLoading || !!contactsError || !reconciled}
           >
             {saving ? <Spinner size={18} /> : null}
             Save expense
           </button>
+
+          {showConfirmModal && (
+            <SheetDialog
+              title="Confirm expense submission"
+              onClose={() => setShowConfirmModal(false)}
+            >
+              <div className="space-y-4 p-5">
+                <h2 className="text-primary text-lg font-bold">Confirm expense</h2>
+                <div className="space-y-2.5 rounded-xl border border-[rgb(var(--color-border))] bg-[rgb(var(--color-bg-secondary))] p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted text-xs">Title</span>
+                    <span className="text-primary text-sm font-semibold">{title.trim()}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted text-xs">Total Amount</span>
+                    <span className="text-primary text-base font-bold">
+                      {formatINR(totalPaise)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted text-xs">Your Share</span>
+                    <span className="text-primary text-sm font-semibold">
+                      {formatINR(allocations?.find((a) => a.userId === user?.id)?.amountPaise ?? 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted text-xs">Split Method</span>
+                    <span className="text-secondary text-xs font-medium uppercase">
+                      {splitMethod}
+                    </span>
+                  </div>
+                </div>
+
+                <p className="text-muted text-xs">
+                  {participants.some((p) => p.userId !== user?.id)
+                    ? 'This expense will be created in pending approval state. Other participants must review and approve their shares before it affects confirmed balances.'
+                    : 'You are the sole participant. This expense will be confirmed immediately.'}
+                </p>
+
+                {error && <ErrorMessage message={error} />}
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmModal(false)}
+                    className="btn-secondary flex-1"
+                    disabled={saving}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await handleSave();
+                      setShowConfirmModal(false);
+                    }}
+                    className="btn-primary inline-flex flex-1 items-center justify-center gap-2"
+                    disabled={saving}
+                  >
+                    {saving ? <Spinner size={16} /> : null}
+                    Confirm & Submit
+                  </button>
+                </div>
+              </div>
+            </SheetDialog>
+          )}
         </div>
       </div>
     </SheetDialog>

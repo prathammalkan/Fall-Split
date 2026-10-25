@@ -230,4 +230,75 @@ describe('ExpenseDetailPage owner-only deletion', () => {
     expect(mocks.removeOperationsForExpense).not.toHaveBeenCalled();
     expect(screen.queryByText('Group details screen')).toBeNull();
   });
+
+  it('requires a dispute reason of at least 3 characters before submitting dispute', async () => {
+    // Current user is participant Bob (not creator)
+    mocks.user = { id: 'other-user' };
+    const mockExpenseWithApprovals = {
+      ...expenseData,
+      status: 'pending_approval',
+    };
+
+    mocks.from.mockImplementation((table: string) => {
+      const builder: Record<string, unknown> = {};
+      builder.select = vi.fn(() => builder);
+      builder.eq = vi.fn(() => builder);
+      builder.neq = vi.fn(() => builder);
+      builder.single = vi.fn(() =>
+        Promise.resolve({ data: mockExpenseWithApprovals, error: null })
+      );
+      builder.then = (resolve: (value: unknown) => unknown) => {
+        if (table === 'expense_approvals') {
+          return Promise.resolve({
+            data: [
+              {
+                id: 'app-1',
+                user_id: 'other-user',
+                status: 'pending',
+                dispute_reason: null,
+                dispute_category: null,
+                created_at: '2026-10-22',
+                responded_at: null,
+                profile: { display_name: 'Other Bob', avatar_url: null },
+              },
+            ],
+            error: null,
+          }).then(resolve);
+        }
+        return Promise.resolve({ data: [], error: null }).then(resolve);
+      };
+      return builder;
+    });
+
+    renderPage();
+
+    const disputeBtn = await screen.findByRole('button', { name: /Dispute/i });
+    fireEvent.click(disputeBtn);
+
+    // Dispute modal is open
+    expect(await screen.findByRole('dialog', { name: 'Dispute expense' })).toBeTruthy();
+    const submitDisputeBtn = screen.getByRole('button', { name: 'Submit dispute' });
+
+    // Disabled initially because reason is empty
+    expect(submitDisputeBtn.hasAttribute('disabled')).toBe(true);
+
+    const reasonInput = screen.getByPlaceholderText(/Explain what needs to be corrected/i);
+    fireEvent.change(reasonInput, { target: { value: 'No' } });
+    expect(submitDisputeBtn.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(reasonInput, { target: { value: 'Amount is incorrect for my share' } });
+    expect(submitDisputeBtn.hasAttribute('disabled')).toBe(false);
+
+    mocks.rpc.mockResolvedValue({ data: { success: true }, error: null });
+    fireEvent.click(submitDisputeBtn);
+
+    await waitFor(() => {
+      expect(mocks.rpc).toHaveBeenCalledWith('respond_to_expense_approval', {
+        p_expense_id: 'expense-1',
+        p_action: 'dispute',
+        p_dispute_category: 'Incorrect personal share',
+        p_dispute_reason: 'Amount is incorrect for my share',
+      });
+    });
+  });
 });
