@@ -8,6 +8,9 @@ import {
   queueOfflineOperation,
   syncPendingOperations,
   updateOperationState,
+  checkQueueWarning,
+  calculateRetryDelay,
+  QUEUE_WARNING_THRESHOLD,
 } from './offlineQueue';
 
 const payload = {
@@ -330,5 +333,113 @@ describe('offlineQueue', () => {
     const remaining = await getAllOperations();
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.id).toBe(op2.id);
+  });
+
+  it('warns when queued operations reach threshold without dropping operations', async () => {
+    // Under threshold
+    const warningBefore = await checkQueueWarning('user-1');
+    expect(warningBefore.isApproachingLimit).toBe(false);
+    expect(warningBefore.threshold).toBe(QUEUE_WARNING_THRESHOLD);
+    expect(warningBefore.message).toBeNull();
+
+    // Queue up to threshold
+    for (let i = 0; i < QUEUE_WARNING_THRESHOLD; i++) {
+      await queuePayload(`threshold-key-${i}`);
+    }
+
+    const warningAfter = await checkQueueWarning('user-1');
+    expect(warningAfter.isApproachingLimit).toBe(true);
+    expect(warningAfter.count).toBe(QUEUE_WARNING_THRESHOLD);
+    expect(warningAfter.message).toContain('queued offline operations');
+
+    // Operations are preserved, not silently dropped
+    const operations = await getAllOperations();
+    expect(operations).toHaveLength(QUEUE_WARNING_THRESHOLD);
+  });
+
+  it('calculates bounded exponential retry delay with jitter schedule', () => {
+    // Retry 0: base 1000ms
+    expect(calculateRetryDelay(0)).toBe(1000);
+
+    // Deterministic jitter test
+    const fakeRandomZero = () => 0;
+    const fakeRandomFull = () => 1;
+
+    // Retry 1: 1000 * 2^1 = 2000ms (+ 0 to 400ms jitter)
+    expect(calculateRetryDelay(1, fakeRandomZero)).toBe(2000);
+    expect(calculateRetryDelay(1, fakeRandomFull)).toBe(2400);
+
+    // Retry 2: 1000 * 2^2 = 4000ms (+ 0 to 800ms jitter)
+    expect(calculateRetryDelay(2, fakeRandomZero)).toBe(4000);
+    expect(calculateRetryDelay(2, fakeRandomFull)).toBe(4800);
+
+    // Retry 10: bounded by MAX_RETRY_DELAY_MS (30000ms)
+    expect(calculateRetryDelay(10, fakeRandomZero)).toBe(30000);
+    expect(calculateRetryDelay(10, fakeRandomFull)).toBe(32000);
+
+    // Negative, NaN, infinite, or extreme retry counts
+    expect(calculateRetryDelay(-5)).toBe(1000);
+    expect(calculateRetryDelay(NaN)).toBe(1000);
+    expect(calculateRetryDelay(Infinity)).toBe(1000);
+    expect(calculateRetryDelay(100, fakeRandomZero)).toBe(30000);
+    expect(calculateRetryDelay(100, fakeRandomFull)).toBe(32000);
+
+    // Out-of-bounds or throwing random generator
+    expect(calculateRetryDelay(1, () => -0.5)).toBe(2000);
+    expect(calculateRetryDelay(1, () => 2.5)).toBe(2400);
+    expect(
+      calculateRetryDelay(1, () => {
+        throw new Error('random error');
+      })
+    ).toBe(2000);
+  });
+
+  it('marks permanent validation or authorization errors as conflict and halts retries', async () => {
+    const key = 'permanent-auth-failure-key';
+    await queuePayload(key);
+
+    const client = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({
+          data: { user: { id: 'user-1' } },
+          error: null,
+        }),
+      },
+      from: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({
+        data: null,
+        error: {
+          code: '42501',
+          message: 'Active authenticated account required',
+        },
+      }),
+    } as unknown as Parameters<typeof syncPendingOperations>[0];
+
+    const result = await syncPendingOperations(client);
+    expect(result.conflicts).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const [operation] = await getAllOperations();
+    expect(operation?.state).toBe('conflict');
+    expect(operation?.lastError).toContain('Active authenticated account required');
+
+    // Conflicted operations must NOT be returned in subsequent pending operations
+    const pending = await getPendingOperations('user-1');
+    expect(pending).toHaveLength(0);
+  });
+
+  it('safely serializes concurrent sync calls', async () => {
+    const key = 'concurrent-sync-test-key';
+    await queuePayload(key);
+    const { client, rpc } = createClient();
+
+    // Trigger two sync calls concurrently
+    const [result1, result2] = await Promise.all([
+      syncPendingOperations(client),
+      syncPendingOperations(client),
+    ]);
+
+    expect(result1.synced + result2.synced).toBe(1);
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

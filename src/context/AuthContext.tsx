@@ -50,14 +50,24 @@ async function readFunctionError(error: Error | null): Promise<Error | null> {
     return error;
   }
 
-  const payload: unknown = await error.context.clone().json();
-  if (
-    typeof payload === 'object' &&
-    payload !== null &&
-    'error' in payload &&
-    typeof payload.error === 'string'
-  ) {
-    return new Error(payload.error);
+  try {
+    const cloned = error.context.clone();
+    if (cloned.status === 404) {
+      return new Error(
+        'Account deletion service is unavailable. Please try again or contact support.'
+      );
+    }
+    const payload: unknown = await cloned.json();
+    if (
+      typeof payload === 'object' &&
+      payload !== null &&
+      'error' in payload &&
+      typeof payload.error === 'string'
+    ) {
+      return new Error(payload.error);
+    }
+  } catch {
+    return error;
   }
   return error;
 }

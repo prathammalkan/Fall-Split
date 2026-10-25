@@ -44,4 +44,17 @@ test.describe('unauthenticated navigation', () => {
     await page.getByRole('button', { name: /back to sign in/i }).click();
     await expect(page).toHaveURL(/\/login$/);
   });
+
+  test('displays intro screen with branding and developer credit on fresh load', async ({
+    page,
+  }) => {
+    await page.goto('/');
+
+    const credit = page.getByText('Developed by Pratham Malkan');
+    await expect(credit).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Fall\s*Split/i })).toBeVisible();
+
+    // Transitions into the application after intro duration
+    await expect(page).toHaveURL(/\/login$/);
+  });
 });

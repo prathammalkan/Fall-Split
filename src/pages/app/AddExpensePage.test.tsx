@@ -86,4 +86,44 @@ describe('AddExpensePage participant loading', () => {
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Next: Split' }).hasAttribute('disabled')).toBe(true);
   });
+
+  it('renders pre-submission confirmation dialog before executing expense save', async () => {
+    mocks.from.mockImplementation(() => {
+      const builder: Record<string, unknown> = {};
+      for (const method of ['select', 'or', 'eq', 'in', 'is']) {
+        builder[method] = vi.fn(() => builder);
+      }
+      builder.then = (resolve: (value: unknown) => unknown) =>
+        Promise.resolve({ data: [], error: null }).then(resolve);
+      return builder;
+    });
+
+    const userEvent = (await import('@testing-library/user-event')).default.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/expenses/new']}>
+        <Routes>
+          <Route path="/expenses/new" element={<AddExpensePage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    // Wait for contacts to load
+    const amountInput = await screen.findByPlaceholderText('0.00');
+    await userEvent.type(amountInput, '100');
+    await userEvent.type(screen.getByPlaceholderText(/Dinner, taxi/i), 'Team Pizza');
+
+    // Click Next: Split
+    await userEvent.click(screen.getByRole('button', { name: 'Next: Split' }));
+
+    // On split screen, click Save expense
+    const saveBtn = await screen.findByRole('button', { name: 'Save expense' });
+    await userEvent.click(saveBtn);
+
+    // Confirm dialog is rendered
+    const confirmDialog = await screen.findByRole('dialog', { name: 'Confirm expense submission' });
+    expect(confirmDialog).toBeTruthy();
+    expect(screen.getAllByText('Team Pizza').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('button', { name: 'Confirm & Submit' })).toBeTruthy();
+  });
 });

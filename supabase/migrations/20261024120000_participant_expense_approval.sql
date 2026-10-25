@@ -288,6 +288,8 @@ BEGIN
 END;
 $function$;
 
+REVOKE ALL ON FUNCTION public.expense_pair_allocations(UUID, UUID) FROM PUBLIC, anon, authenticated;
+
 -- 5. RPC to respond to expense approval (Approve or Dispute)
 CREATE OR REPLACE FUNCTION public.respond_to_expense_approval(
   p_expense_id UUID,
@@ -314,6 +316,16 @@ BEGIN
 
   IF p_action NOT IN ('approve', 'dispute') THEN
     RAISE EXCEPTION 'Invalid approval action. Must be approve or dispute' USING ERRCODE = '22023';
+  END IF;
+
+  IF p_action = 'dispute' THEN
+    IF p_dispute_reason IS NULL OR pg_catalog.char_length(pg_catalog.btrim(p_dispute_reason)) < 3 THEN
+      RAISE EXCEPTION 'A valid dispute reason is required' USING ERRCODE = '22023';
+    END IF;
+    IF pg_catalog.char_length(p_dispute_reason) > 500
+      OR (p_dispute_category IS NOT NULL AND pg_catalog.char_length(p_dispute_category) > 100) THEN
+      RAISE EXCEPTION 'Dispute details exceed maximum allowed length' USING ERRCODE = '22023';
+    END IF;
   END IF;
 
   -- Acquire advisory lock on expense to serialize concurrent approvals
@@ -488,7 +500,9 @@ BEGIN
     RAISE EXCEPTION 'A valid expense idempotency key is required' USING ERRCODE = '22023';
   END IF;
   IF v_title IS NULL OR pg_catalog.char_length(v_title) NOT BETWEEN 1 AND 120
-    OR v_amount_paise IS NULL OR v_amount_paise <= 0
+    OR v_amount_paise IS NULL OR v_amount_paise <= 0 OR v_amount_paise > 100000000000
+    OR (v_notes IS NOT NULL AND pg_catalog.char_length(v_notes) > 500)
+    OR (v_category IS NOT NULL AND pg_catalog.char_length(v_category) > 50)
     OR v_currency IS NULL OR v_currency !~ '^[A-Z]{3}$'
     OR v_split_method IS NULL OR v_expense_date IS NULL THEN
     RAISE EXCEPTION 'Expense details are invalid' USING ERRCODE = '22023';
@@ -515,6 +529,10 @@ BEGIN
     COALESCE(pg_catalog.count(CASE WHEN share."userId" <> v_creator_id THEN 1 END), 0)
   INTO v_share_count, v_share_user_count, v_share_distinct_user_count, v_share_amount_count, v_share_total, v_other_participant_count
   FROM pg_catalog.jsonb_to_recordset(p_shares) AS share("userId" UUID, "amountPaise" BIGINT);
+
+  IF v_share_count > 100 OR v_payer_count > 50 THEN
+    RAISE EXCEPTION 'Participant count exceeds maximum allowed limits' USING ERRCODE = '22023';
+  END IF;
 
   IF v_payer_count = 0 OR v_payer_user_count <> v_payer_count
     OR v_payer_distinct_user_count <> v_payer_count
@@ -628,6 +646,9 @@ BEGIN
   RETURN v_expense_id;
 END;
 $function$;
+
+REVOKE ALL ON FUNCTION public.create_expense_with_records(JSONB, JSONB, JSONB) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.create_expense_with_records(JSONB, JSONB, JSONB) TO authenticated;
 
 -- 7. Update update_expense_with_records to invalidate participant approvals on material edits
 CREATE OR REPLACE FUNCTION public.update_expense_with_records(

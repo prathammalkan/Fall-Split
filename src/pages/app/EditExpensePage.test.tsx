@@ -55,6 +55,7 @@ describe('EditExpensePage atomic updates', () => {
       const builder: Record<string, unknown> = {};
       builder.select = vi.fn(() => builder);
       builder.eq = vi.fn(() => builder);
+      builder.in = vi.fn(() => builder);
       builder.single = vi.fn().mockResolvedValue({ data: expense, error: null });
       return builder;
     });
@@ -98,5 +99,16 @@ describe('EditExpensePage atomic updates', () => {
     expect(await screen.findByText(/This expense changed while you were editing it/)).toBeTruthy();
     expect(screen.queryByText('Expense saved')).toBeNull();
     expect(mocks.dbFrom).not.toHaveBeenCalled();
+  });
+
+  it('displays approval requirement notice when editing an expense with other participants', async () => {
+    renderPage();
+
+    expect(await screen.findByDisplayValue('Dinner')).toBeTruthy();
+    expect(
+      screen.getByText(
+        /Approval Requirement: Saving changes will reset this expense to pending approval/i
+      )
+    ).toBeTruthy();
   });
 });
