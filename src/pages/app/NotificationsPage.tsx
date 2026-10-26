@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, Check, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
@@ -49,7 +50,15 @@ export function NotificationsPage() {
 
   const load = useCallback(async () => {
     if (!user) return;
-    setLoading(true);
+    const userId = user.id;
+    // Serve cached notifications immediately (stale-while-revalidate)
+    const cached = readCache<Notification[]>(userId, CacheKey.notifications);
+    if (cached.data !== null) {
+      setNotifications(cached.data);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     const { data, error: loadError } = await supabase
       .from('notifications')
@@ -61,7 +70,9 @@ export function NotificationsPage() {
       setError('Notifications could not be loaded. Please try again.');
       setNotifications([]);
     } else {
-      setNotifications(data ?? []);
+      const fresh = data ?? [];
+      setNotifications(fresh);
+      writeCache(userId, CacheKey.notifications, fresh);
     }
     setLoading(false);
   }, [user]);
@@ -81,6 +92,7 @@ export function NotificationsPage() {
       setError('Notifications could not be updated. Please try again.');
       return;
     }
+    invalidateCache(user.id, CacheKey.notifications);
     void load();
   };
 

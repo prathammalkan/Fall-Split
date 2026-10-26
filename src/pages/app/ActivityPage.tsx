@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
 import { formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
@@ -80,8 +81,18 @@ export function ActivityPage() {
   const load = useCallback(
     async (currentLimit = limit) => {
       if (!user) return;
-      if (currentLimit === PAGE_SIZE) {
-        setLoading(true);
+      const userId = user.id;
+      const isInitialLoad = currentLimit === PAGE_SIZE;
+      // Serve cached activity feed immediately on initial load (stale-while-revalidate)
+      if (isInitialLoad) {
+        const cached = readCache<ActivityItem[]>(userId, CacheKey.activityFeed);
+        if (cached.data !== null) {
+          setItems(cached.data);
+          setLoading(false);
+        } else {
+          setLoading(true);
+        }
+        setLoadingMore(false);
       } else {
         setLoadingMore(true);
       }
@@ -205,6 +216,10 @@ export function ActivityPage() {
         // Sort by date desc
         activityItems.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         setItems(activityItems);
+        // Cache the first page for instant display on re-visit
+        if (currentLimit === PAGE_SIZE) {
+          writeCache(user.id, CacheKey.activityFeed, activityItems);
+        }
       } finally {
         setLoading(false);
         setLoadingMore(false);
@@ -268,7 +283,8 @@ export function ActivityPage() {
       setShowDeleteConfirm(false);
       setSelectMode(false);
       setSelected(new Set());
-      // Reload activity after deletion
+      // Invalidate cache and reload activity after deletion
+      invalidateCache(user.id, CacheKey.activityFeed);
       void load(PAGE_SIZE);
       setLimit(PAGE_SIZE);
     } catch (err) {

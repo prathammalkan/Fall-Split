@@ -4,6 +4,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { db, supabase } from '../lib/supabase';
 import { completeAccountDeletion } from '../lib/accountDeletion';
 import { clearOperationsForUser } from '../lib/offlineQueue';
+import { clearCacheForUser } from '../lib/pageCache';
 import { isSafeRedirect } from '../lib/safeRedirect';
 import type { Profile } from '../types';
 
@@ -113,12 +114,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const emailVerified = user?.email_confirmed_at != null || user?.phone_confirmed_at != null;
 
       if (!user) {
-        setState({
-          session: null,
-          user: null,
-          profile: null,
-          loading: false,
-          emailVerified: false,
+        // Clear the in-memory page cache for the previous user on sign-out /
+        // account switch so a new user cannot see stale data from the old session.
+        setState((prev) => {
+          if (prev.user?.id) {
+            clearCacheForUser(prev.user.id);
+          }
+          return {
+            session: null,
+            user: null,
+            profile: null,
+            loading: false,
+            emailVerified: false,
+          };
         });
         return;
       }

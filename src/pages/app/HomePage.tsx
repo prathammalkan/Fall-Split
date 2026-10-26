@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -18,6 +18,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
 import { supabase, db } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { Avatar } from '../../components/ui/Avatar';
@@ -96,7 +97,15 @@ export function HomePage() {
 
   const loadHomeData = useCallback(async () => {
     if (!user) return;
-    setLoadState('loading');
+    const userId = user.id;
+    // Serve cached balances immediately (stale-while-revalidate)
+    const { data: cached } = readCache<HomeData>(userId, CacheKey.homeBalances);
+    if (cached !== null) {
+      setData(cached);
+      setLoadState('loaded');
+    } else {
+      setLoadState('loading');
+    }
     try {
       // 1. Load confirmed balances
       const { data: balances, error: rpcError } = await supabase.rpc('get_friend_balances');
@@ -152,6 +161,13 @@ export function HomePage() {
         youOwe.sort((a, b) => Math.abs(b.netPaise) - Math.abs(a.netPaise));
 
         setData({
+          netPaise: owedToPaise - owingPaise,
+          owedToPaise,
+          owingPaise,
+          youOwe: youOwe.slice(0, 5),
+          owedToYou: owedToYou.slice(0, 5),
+        });
+        writeCache(userId, CacheKey.homeBalances, {
           netPaise: owedToPaise - owingPaise,
           owedToPaise,
           owingPaise,
@@ -359,6 +375,7 @@ export function HomePage() {
         p_settlement_id: settlementId,
         p_action: action,
       });
+      invalidateCache(user.id, CacheKey.homeBalances);
       await loadHomeData();
     } catch {
       // Ignored

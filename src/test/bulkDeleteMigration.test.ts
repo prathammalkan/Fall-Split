@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import originalMigration from '../../supabase/migrations/20261026120000_bulk_delete_my_expenses.sql?raw';
 import fixMigration from '../../supabase/migrations/20261026140000_fix_bulk_delete_ordering.sql?raw';
+import approvalCleanupMigration from '../../supabase/migrations/20261026150000_bulk_delete_cleanup_approvals.sql?raw';
 
 // ---------------------------------------------------------------------------
 // Static source-contract tests for bulk_delete_my_expenses
@@ -266,5 +267,115 @@ describe('bulk_delete_my_expenses — source contracts', () => {
       'GRANT EXECUTE ON FUNCTION public.bulk_delete_my_expenses(UUID[]) TO authenticated;'
     );
     expect(fixMigration).not.toMatch(/GRANT\s+EXECUTE.*TO\s+(PUBLIC|anon)/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for 20261026150000_bulk_delete_cleanup_approvals.sql
+//
+// Verifies that bulk_delete_my_expenses now explicitly deletes
+// expense_approvals rows after soft-deleting an expense, matching the
+// behaviour of delete_expense (single). Previously, bulk-delete left
+// orphaned approval rows because the soft-delete (UPDATE status='deleted')
+// does not trigger the ON DELETE CASCADE FK on expense_approvals.expense_id.
+// ---------------------------------------------------------------------------
+describe('bulk_delete_my_expenses — expense_approvals cleanup (20261026150000)', () => {
+  it('imports the cleanup migration without error', () => {
+    expect(typeof approvalCleanupMigration).toBe('string');
+    expect(approvalCleanupMigration.length).toBeGreaterThan(0);
+  });
+
+  it('is a CREATE OR REPLACE for bulk_delete_my_expenses with SECURITY DEFINER and hardened search_path', () => {
+    expect(approvalCleanupMigration).toContain(
+      'CREATE OR REPLACE FUNCTION public.bulk_delete_my_expenses('
+    );
+    expect(approvalCleanupMigration).toContain('SECURITY DEFINER');
+    expect(approvalCleanupMigration).toContain(
+      'SET search_path = pg_catalog, public, auth, pg_temp'
+    );
+    expect(approvalCleanupMigration).toContain('SET row_security = off');
+  });
+
+  it('explicitly deletes expense_approvals after expense_shares', () => {
+    const sharesIdx = approvalCleanupMigration.indexOf(
+      'DELETE FROM public.expense_shares WHERE expense_id = v_expense_id;'
+    );
+    // Use lastIndexOf to skip any comment references and find the actual DELETE statement
+    const approvalsIdx = approvalCleanupMigration.lastIndexOf(
+      'DELETE FROM public.expense_approvals WHERE expense_id = v_expense_id;'
+    );
+    expect(sharesIdx).toBeGreaterThan(-1);
+    expect(approvalsIdx).toBeGreaterThan(sharesIdx); // approvals deleted AFTER shares
+  });
+
+  it('still deletes expense_items, expense_payers, and expense_shares (no regression)', () => {
+    expect(approvalCleanupMigration).toContain(
+      'DELETE FROM public.expense_items  WHERE expense_id = v_expense_id;'
+    );
+    expect(approvalCleanupMigration).toContain(
+      'DELETE FROM public.expense_payers WHERE expense_id = v_expense_id;'
+    );
+    expect(approvalCleanupMigration).toContain(
+      'DELETE FROM public.expense_shares WHERE expense_id = v_expense_id;'
+    );
+  });
+
+  it('preserves the correct ownership-before-status ordering', () => {
+    const creatorIdx = approvalCleanupMigration.indexOf(
+      'IF v_expense.creator_id <> v_user_id THEN'
+    );
+    const deletedIdx = approvalCleanupMigration.indexOf("IF v_expense.status = 'deleted' THEN");
+    expect(creatorIdx).toBeGreaterThan(-1);
+    expect(deletedIdx).toBeGreaterThan(creatorIdx);
+  });
+
+  it('preserves the settlement check after advisory and row locks (no TOCTOU regression)', () => {
+    const lockIdx = approvalCleanupMigration.indexOf('pg_advisory_xact_lock');
+    const forUpdateIdx = approvalCleanupMigration.indexOf('FOR UPDATE;');
+    const settlementIdx = approvalCleanupMigration.indexOf("s.status IN ('proposed', 'pending')");
+    expect(lockIdx).toBeGreaterThan(-1);
+    expect(forUpdateIdx).toBeGreaterThan(lockIdx);
+    expect(settlementIdx).toBeGreaterThan(forUpdateIdx);
+  });
+
+  it('keeps the 100-ID per-call cap', () => {
+    expect(approvalCleanupMigration).toContain(
+      'IF pg_catalog.array_length(p_expense_ids, 1) > 100 THEN'
+    );
+    expect(approvalCleanupMigration).toContain(
+      "RAISE EXCEPTION 'Cannot delete more than 100 expenses per call' USING ERRCODE = '22023';"
+    );
+  });
+
+  it('preserves audit trail insertion before the soft-delete UPDATE', () => {
+    const histIdx = approvalCleanupMigration.indexOf('INSERT INTO public.expense_history');
+    const updIdx = approvalCleanupMigration.indexOf("UPDATE public.expenses");
+    expect(histIdx).toBeGreaterThan(-1);
+    expect(updIdx).toBeGreaterThan(histIdx);
+  });
+
+  it('keeps grants: anon revoked, authenticated granted', () => {
+    expect(approvalCleanupMigration).toContain(
+      'REVOKE ALL ON FUNCTION public.bulk_delete_my_expenses(UUID[]) FROM PUBLIC, anon;'
+    );
+    expect(approvalCleanupMigration).toContain(
+      'GRANT EXECUTE ON FUNCTION public.bulk_delete_my_expenses(UUID[]) TO authenticated;'
+    );
+  });
+
+  it('is wrapped in a transaction (BEGIN / COMMIT)', () => {
+    expect(approvalCleanupMigration).toMatch(/^\s*BEGIN\s*;/m);
+    expect(approvalCleanupMigration).toMatch(/COMMIT\s*;\s*$/m);
+  });
+
+  it('cleanup migration adds expense_approvals DELETE that was missing in the fix migration', () => {
+    // Verify the fix migration did NOT have expense_approvals cleanup (the gap we're patching)
+    expect(fixMigration).not.toContain(
+      'DELETE FROM public.expense_approvals WHERE expense_id = v_expense_id;'
+    );
+    // Verify the cleanup migration does have it
+    expect(approvalCleanupMigration).toContain(
+      'DELETE FROM public.expense_approvals WHERE expense_id = v_expense_id;'
+    );
   });
 });

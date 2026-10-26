@@ -1,8 +1,9 @@
-﻿import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Layers } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
+import { readCache, writeCache, CacheKey } from '../../lib/pageCache';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Spinner } from '../../components/ui/Spinner';
@@ -25,7 +26,15 @@ export function GroupsPage() {
 
   const load = useCallback(async () => {
     if (!user) return;
-    setLoading(true);
+    const userId = user.id;
+    // Serve cached groups immediately (stale-while-revalidate)
+    const cached = readCache<Group[]>(userId, CacheKey.groupsList);
+    if (cached.data !== null) {
+      setGroups(cached.data);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const { data, error: loadError } = await supabase
@@ -39,7 +48,9 @@ export function GroupsPage() {
         return;
       }
       const rows = (data ?? []) as unknown as { groups: Group | null }[];
-      setGroups(rows.map((d) => d.groups).filter((g): g is Group => g !== null));
+      const freshGroups = rows.map((d) => d.groups).filter((g): g is Group => g !== null);
+      setGroups(freshGroups);
+      writeCache(userId, CacheKey.groupsList, freshGroups);
     } catch {
       setGroups([]);
       setError('Groups could not be loaded. Please try again.');

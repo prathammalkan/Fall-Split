@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
 import { formatINR } from '../../lib/money';
 import { Avatar } from '../../components/ui/Avatar';
 import { PageHeader } from '../../components/layout/PageHeader';
@@ -72,7 +73,19 @@ export function FriendsPage() {
 
   const load = useCallback(async () => {
     if (!user) return;
-    setLoading(true);
+    const userId = user.id;
+    // Serve cached friends immediately (stale-while-revalidate)
+    const cached = readCache<{ friends: FriendWithBalance[]; pending: PendingRequest[] }>(
+      userId,
+      CacheKey.friendsList
+    );
+    if (cached.data !== null) {
+      setFriends(cached.data.friends);
+      setPending(cached.data.pending);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setLoadError(null);
     try {
       const { data: requestsRaw, error: requestsError } = await supabase
@@ -85,6 +98,7 @@ export function FriendsPage() {
       if (requests.length === 0) {
         setFriends([]);
         setPending([]);
+        writeCache(userId, CacheKey.friendsList, { friends: [], pending: [] });
         return;
       }
 
@@ -143,6 +157,7 @@ export function FriendsPage() {
 
       setFriends(accepted);
       setPending(pendingList);
+      writeCache(userId, CacheKey.friendsList, { friends: accepted, pending: pendingList });
     } catch {
       setLoadError('Could not load friends and balances. Check your connection and try again.');
     } finally {
@@ -244,6 +259,7 @@ export function FriendsPage() {
         );
         return;
       }
+      invalidateCache(user?.id ?? '', CacheKey.friendsList);
       void load();
     } catch {
       setActionError('Could not update friend request. Check your connection and try again.');
