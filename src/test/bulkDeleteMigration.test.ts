@@ -349,7 +349,7 @@ describe('bulk_delete_my_expenses — expense_approvals cleanup (20261026150000)
 
   it('preserves audit trail insertion before the soft-delete UPDATE', () => {
     const histIdx = approvalCleanupMigration.indexOf('INSERT INTO public.expense_history');
-    const updIdx = approvalCleanupMigration.indexOf("UPDATE public.expenses");
+    const updIdx = approvalCleanupMigration.indexOf('UPDATE public.expenses');
     expect(histIdx).toBeGreaterThan(-1);
     expect(updIdx).toBeGreaterThan(histIdx);
   });
