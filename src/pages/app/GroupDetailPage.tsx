@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Plus, Receipt } from 'lucide-react';
+import { Plus, Receipt, UserPlus } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
@@ -8,17 +9,20 @@ import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { EmptyState } from '../../components/ui/EmptyState';
+import { ShareInviteModal } from '../../components/ui/ShareInviteModal';
 import { format } from 'date-fns';
 import type { Group, GroupMember, Profile, Expense } from '../../types';
 
 export function GroupDetailPage() {
   const { groupId } = useParams<{ groupId: string }>();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [group, setGroup] = useState<Group | null>(null);
   const [members, setMembers] = useState<Array<GroupMember & { profile: Profile }>>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   const load = useCallback(async () => {
     if (!groupId) return;
@@ -95,6 +99,9 @@ export function GroupDetailPage() {
   );
   const confirmedTotalPaise = confirmedExpenses.reduce((a, e) => a + e.amount_paise, 0);
   const pendingTotalPaise = pendingExpenses.reduce((a, e) => a + e.amount_paise, 0);
+  const isAdmin =
+    members.some((m) => m.user_id === user?.id && m.role === 'admin') ||
+    group.creator_id === user?.id;
 
   return (
     <div>
@@ -102,12 +109,25 @@ export function GroupDetailPage() {
         title={group.name}
         back
         actions={
-          <button
-            onClick={() => navigate(`/expenses/new?groupId=${group.id}`)}
-            className="btn-primary px-3 py-1.5 text-sm"
-          >
-            <Plus size={16} /> Add
-          </button>
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowInviteModal(true)}
+                className="btn-secondary inline-flex items-center gap-1.5 px-3 py-1.5 text-sm"
+                aria-label="Invite to group"
+              >
+                <UserPlus size={16} /> Invite
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate(`/expenses/new?groupId=${group.id}`)}
+              className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-sm"
+            >
+              <Plus size={16} /> Add
+            </button>
+          </div>
         }
       />
       <div className="page-content space-y-4 pt-4">
@@ -192,6 +212,14 @@ export function GroupDetailPage() {
           )}
         </div>
       </div>
+
+      {showInviteModal && (
+        <ShareInviteModal
+          type="group"
+          groupId={group.id}
+          onClose={() => setShowInviteModal(false)}
+        />
+      )}
     </div>
   );
 }

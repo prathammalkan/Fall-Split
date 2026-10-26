@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+﻿import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Layers } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -10,10 +10,10 @@ import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import type { Group } from '../../types';
 
 const GROUP_ICONS: Record<string, string> = {
-  trip: '✈️',
+  trip: '🌊',
   household: '🏠',
   event: '🎉',
-  custom: '⚡',
+  custom: '📋',
 };
 
 export function GroupsPage() {

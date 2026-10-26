@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import migration from '../../supabase/migrations/20261024120000_participant_expense_approval.sql?raw';
+import rawMigration from '../../supabase/migrations/20261024120000_participant_expense_approval.sql?raw';
+
+const migration = rawMigration.replace(/\r\n/g, '\n');
 
 describe('Participant expense approval migration contract', () => {
   it('extends expense_status enum with required approval statuses', () => {

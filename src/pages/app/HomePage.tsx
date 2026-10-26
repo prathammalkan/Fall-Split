@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+﻿import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -14,6 +14,8 @@ import {
   CheckCircle2,
   Check,
   X,
+  Layers,
+  Activity,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
@@ -656,14 +658,6 @@ export function HomePage() {
         </div>
       )}
 
-      {/* Settled up card if zero balances and not loading */}
-      {!isLoading && !hasError && data && data.owedToPaise === 0 && data.owingPaise === 0 && (
-        <div className="card mb-4" aria-live="polite">
-          <p className="text-primary text-center text-base font-semibold">
-            You&apos;re all caught up on balances.
-          </p>
-        </div>
-      )}
 
       {/* Settled up summary for empty state placeholder */}
       {isLoading && (
@@ -755,29 +749,141 @@ export function HomePage() {
         </div>
       )}
 
-      {/* Empty state for new users */}
+      {/* Empty / Welcome state */}
       {!isLoading && isEmpty && !hasError && (
-        <div className="card py-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[rgb(var(--color-accent)/0.1)]">
-            <Users size={32} className="text-[rgb(var(--color-accent))]" aria-hidden="true" />
+        <div className="space-y-4">
+          {/* Hero welcome card */}
+          <div
+            className="relative overflow-hidden rounded-2xl p-6"
+            style={{
+              background:
+                'linear-gradient(135deg, rgb(var(--color-accent)) 0%, rgb(249 115 22 / 0.75) 100%)',
+            }}
+            aria-label="Welcome to Fall Split"
+          >
+            <div
+              className="absolute -top-8 -right-8 h-40 w-40 rounded-full bg-white/10"
+              aria-hidden="true"
+            />
+            <div
+              className="absolute -right-4 -bottom-10 h-28 w-28 rounded-full bg-white/5"
+              aria-hidden="true"
+            />
+            <div className="relative">
+              <p className="mb-1 text-sm font-semibold text-white/80">Welcome to Fall Split</p>
+              <h2 className="mb-2 text-xl font-black text-white leading-tight">
+                Split bills fairly,<br />settle up fast.
+              </h2>
+              <p className="mb-5 text-sm text-white/75 max-w-xs">
+                Add friends, record shared expenses, and track who owes what — all in one place.
+              </p>
+              <div className="flex gap-2 flex-wrap">
+                <Link
+                  to="/friends"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-[rgb(var(--color-accent))] transition-opacity hover:opacity-90 active:scale-95"
+                >
+                  <Users size={15} />
+                  Add a friend
+                </Link>
+                <button
+                  onClick={() => navigate('/expenses/new')}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-white/20 px-4 py-2 text-sm font-semibold text-white border border-white/30 transition-opacity hover:bg-white/30 active:scale-95"
+                >
+                  <Plus size={15} />
+                  Add expense
+                </button>
+              </div>
+            </div>
           </div>
-          <h2 className="text-primary mb-2 text-base font-semibold">
-            You have no unpaid expenses.
-          </h2>
-          <p className="text-muted mx-auto mb-4 max-w-xs text-sm">
-            Add a friend or record a new expense to keep things moving.
-          </p>
-          <div className="mx-auto flex max-w-xs flex-col gap-2">
-            <Link to="/friends" className="btn-primary">
-              Add a friend
+
+          {/* How it works */}
+          <div className="card">
+            <p className="section-title mb-3">How it works</p>
+            <div className="space-y-3">
+              {([
+                {
+                  step: '1',
+                  icon: '\u{1F44B}',
+                  title: 'Add friends',
+                  desc: 'Connect via invite link or search by username.',
+                  to: '/friends' as const,
+                },
+                {
+                  step: '2',
+                  icon: '\u{1F9FE}',
+                  title: 'Record an expense',
+                  desc: 'Split equally, by amount, percentage, or itemise.',
+                  to: '/expenses/new' as const,
+                },
+                {
+                  step: '3',
+                  icon: '\u2705',
+                  title: 'Everyone approves',
+                  desc: 'Participants confirm the split before it counts.',
+                  to: null,
+                },
+                {
+                  step: '4',
+                  icon: '\u{1F91D}',
+                  title: 'Settle up',
+                  desc: 'Mark payments and confirm receipt to clear balances.',
+                  to: '/settlements' as const,
+                },
+              ] as const).map(({ step, icon, title, desc, to }) => (
+                <div key={step} className="flex items-start gap-3">
+                  <div
+                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[rgb(var(--color-accent)/0.12)] text-sm"
+                    aria-hidden="true"
+                  >
+                    {icon}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-primary text-sm font-semibold">{title}</p>
+                    <p className="text-muted text-xs">{desc}</p>
+                  </div>
+                  {to && (
+                    <Link
+                      to={to}
+                      className="text-[rgb(var(--color-accent))] text-xs font-medium flex-shrink-0"
+                      aria-label={`Go to ${title}`}
+                    >
+                      Start &rarr;
+                    </Link>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Quick action tiles */}
+          <div className="grid grid-cols-2 gap-3">
+            <Link
+              to="/groups/new"
+              className="card flex flex-col items-center gap-2 py-5 text-center transition-colors hover:border-[rgb(var(--color-accent)/0.4)] active:scale-95"
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--color-accent)/0.1)]">
+                <Layers size={20} className="text-[rgb(var(--color-accent))]" aria-hidden="true" />
+              </div>
+              <div>
+                <p className="text-primary text-sm font-semibold">Create group</p>
+                <p className="text-muted text-xs">Trip, flat, event</p>
+              </div>
             </Link>
-            <button onClick={() => navigate('/expenses/new')} className="btn-secondary">
-              Add an expense
-            </button>
+            <Link
+              to="/activity"
+              className="card flex flex-col items-center gap-2 py-5 text-center transition-colors hover:border-[rgb(var(--color-accent)/0.4)] active:scale-95"
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--color-accent)/0.1)]">
+                <Activity size={20} className="text-[rgb(var(--color-accent))]" aria-hidden="true" />
+              </div>
+              <div>
+                <p className="text-primary text-sm font-semibold">Activity</p>
+                <p className="text-muted text-xs">See what&apos;s happening</p>
+              </div>
+            </Link>
           </div>
         </div>
       )}
-
       {/* Loading state list skeleton */}
       {isLoading && (
         <div className="space-y-3" aria-busy="true" aria-label="Loading balances">
