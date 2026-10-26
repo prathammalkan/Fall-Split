@@ -658,7 +658,6 @@ export function HomePage() {
         </div>
       )}
 
-
       {/* Settled up summary for empty state placeholder */}
       {isLoading && (
         <div className="card mb-4" aria-label="Loading balance">
@@ -771,13 +770,15 @@ export function HomePage() {
             />
             <div className="relative">
               <p className="mb-1 text-sm font-semibold text-white/80">Welcome to Fall Split</p>
-              <h2 className="mb-2 text-xl font-black text-white leading-tight">
-                Split bills fairly,<br />settle up fast.
+              <h2 className="mb-2 text-xl leading-tight font-black text-white">
+                Split bills fairly,
+                <br />
+                settle up fast.
               </h2>
-              <p className="mb-5 text-sm text-white/75 max-w-xs">
+              <p className="mb-5 max-w-xs text-sm text-white/75">
                 Add friends, record shared expenses, and track who owes what — all in one place.
               </p>
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex flex-wrap gap-2">
                 <Link
                   to="/friends"
                   className="inline-flex items-center gap-1.5 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-[rgb(var(--color-accent))] transition-opacity hover:opacity-90 active:scale-95"
@@ -787,7 +788,7 @@ export function HomePage() {
                 </Link>
                 <button
                   onClick={() => navigate('/expenses/new')}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-white/20 px-4 py-2 text-sm font-semibold text-white border border-white/30 transition-opacity hover:bg-white/30 active:scale-95"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/30 bg-white/20 px-4 py-2 text-sm font-semibold text-white transition-opacity hover:bg-white/30 active:scale-95"
                 >
                   <Plus size={15} />
                   Add expense
@@ -800,36 +801,38 @@ export function HomePage() {
           <div className="card">
             <p className="section-title mb-3">How it works</p>
             <div className="space-y-3">
-              {([
-                {
-                  step: '1',
-                  icon: '\u{1F44B}',
-                  title: 'Add friends',
-                  desc: 'Connect via invite link or search by username.',
-                  to: '/friends' as const,
-                },
-                {
-                  step: '2',
-                  icon: '\u{1F9FE}',
-                  title: 'Record an expense',
-                  desc: 'Split equally, by amount, percentage, or itemise.',
-                  to: '/expenses/new' as const,
-                },
-                {
-                  step: '3',
-                  icon: '\u2705',
-                  title: 'Everyone approves',
-                  desc: 'Participants confirm the split before it counts.',
-                  to: null,
-                },
-                {
-                  step: '4',
-                  icon: '\u{1F91D}',
-                  title: 'Settle up',
-                  desc: 'Mark payments and confirm receipt to clear balances.',
-                  to: '/settlements' as const,
-                },
-              ] as const).map(({ step, icon, title, desc, to }) => (
+              {(
+                [
+                  {
+                    step: '1',
+                    icon: '\u{1F44B}',
+                    title: 'Add friends',
+                    desc: 'Connect via invite link or search by username.',
+                    to: '/friends' as const,
+                  },
+                  {
+                    step: '2',
+                    icon: '\u{1F9FE}',
+                    title: 'Record an expense',
+                    desc: 'Split equally, by amount, percentage, or itemise.',
+                    to: '/expenses/new' as const,
+                  },
+                  {
+                    step: '3',
+                    icon: '\u2705',
+                    title: 'Everyone approves',
+                    desc: 'Participants confirm the split before it counts.',
+                    to: null,
+                  },
+                  {
+                    step: '4',
+                    icon: '\u{1F91D}',
+                    title: 'Settle up',
+                    desc: 'Mark payments and confirm receipt to clear balances.',
+                    to: '/settlements' as const,
+                  },
+                ] as const
+              ).map(({ step, icon, title, desc, to }) => (
                 <div key={step} className="flex items-start gap-3">
                   <div
                     className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[rgb(var(--color-accent)/0.12)] text-sm"
@@ -844,7 +847,7 @@ export function HomePage() {
                   {to && (
                     <Link
                       to={to}
-                      className="text-[rgb(var(--color-accent))] text-xs font-medium flex-shrink-0"
+                      className="flex-shrink-0 text-xs font-medium text-[rgb(var(--color-accent))]"
                       aria-label={`Go to ${title}`}
                     >
                       Start &rarr;
@@ -874,7 +877,11 @@ export function HomePage() {
               className="card flex flex-col items-center gap-2 py-5 text-center transition-colors hover:border-[rgb(var(--color-accent)/0.4)] active:scale-95"
             >
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--color-accent)/0.1)]">
-                <Activity size={20} className="text-[rgb(var(--color-accent))]" aria-hidden="true" />
+                <Activity
+                  size={20}
+                  className="text-[rgb(var(--color-accent))]"
+                  aria-hidden="true"
+                />
               </div>
               <div>
                 <p className="text-primary text-sm font-semibold">Activity</p>
