@@ -1,0 +1,11 @@
+import pg from 'pg';
+import { readFileSync } from 'fs';
+const env = readFileSync('.env.local','utf8');
+const url = env.match(/SUPABASE_DB_URL=(.+)/)[1].trim();
+const client = new pg.Client({connectionString: url});
+await client.connect();
+const {rows} = await client.query('SELECT COUNT(*) as cnt FROM supabase_migrations.schema_migrations');
+const {rows: r2} = await client.query('SELECT version FROM supabase_migrations.schema_migrations ORDER BY version DESC LIMIT 3');
+console.log('Total migrations:', rows[0].cnt);
+console.log('Last 3:', r2.map(r=>r.version).join(', '));
+await client.end();
