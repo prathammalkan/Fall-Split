@@ -20,7 +20,6 @@ interface AuthContextValue extends AuthState {
   signInWithEmail: (email: string, password: string) => Promise<{ error: Error | null }>;
   signInWithMagicLink: (email: string, redirectTo?: string) => Promise<{ error: Error | null }>;
   signInWithGoogle: (redirectTo?: string) => Promise<{ error: Error | null }>;
-  signInWithApple: (redirectTo?: string) => Promise<{ error: Error | null }>;
   signUp: (
     email: string,
     password: string,
@@ -223,14 +222,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error as Error | null };
   }, []);
 
-  const signInWithApple = useCallback(async (redirectTo?: string) => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'apple',
-      options: { redirectTo: getAuthCallbackUrl(redirectTo) },
-    });
-    return { error: error as Error | null };
-  }, []);
-
   const signUp = useCallback(
     async (email: string, password: string, displayName: string, redirectTo?: string) => {
       const { error } = await supabase.auth.signUp({
@@ -320,7 +311,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signInWithEmail,
     signInWithMagicLink,
     signInWithGoogle,
-    signInWithApple,
     signUp,
     resendVerificationEmail,
     signOut,
