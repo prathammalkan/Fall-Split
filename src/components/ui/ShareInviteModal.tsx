@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, Copy, Share2, Check, AlertCircle, QrCode, Camera } from 'lucide-react';
 import QRCode from 'react-qr-code';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../lib/supabase';
+import { consumeRateLimit, formatRateLimitMessage, RATE_LIMITS } from '../../lib/rateLimiter';
 import { Spinner } from './Spinner';
 import { getInviteUrl } from '../../lib/inviteUrl';
 
@@ -20,8 +21,21 @@ export function ShareInviteModal({ onClose, type = 'friend', groupId }: ShareInv
   const [genError, setGenError] = useState<string | null>(null);
   const [copyFallback, setCopyFallback] = useState(false);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   const generateLink = async () => {
     if (!user) return;
+    const limitResult = consumeRateLimit('inviteGenerate', RATE_LIMITS.inviteGenerate, user.id);
+    if (!limitResult.allowed) {
+      setGenError(formatRateLimitMessage('invite generations', limitResult.retryAfterSeconds));
+      return;
+    }
     setGenerating(true);
     setGenError(null);
     let invitationUrl: string;

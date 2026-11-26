@@ -131,13 +131,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setState((previous) => ({
-        session,
-        user,
-        profile: previous.user?.id === user.id ? previous.profile : null,
-        loading: false,
-        emailVerified,
-      }));
+      setState((previous) => {
+        if (previous.user?.id && previous.user.id !== user.id) {
+          clearCacheForUser(previous.user.id);
+        }
+        return {
+          session,
+          user,
+          profile: previous.user?.id === user.id ? previous.profile : null,
+          loading: false,
+          emailVerified,
+        };
+      });
 
       // Supabase auth callbacks run while its auth lock is held. Defer the
       // profile RPC until after the callback returns, and discard stale results

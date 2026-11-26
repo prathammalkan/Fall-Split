@@ -2,6 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, UserPlus, Check } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import {
+  readCache,
+  writeCache,
+  invalidateLedgerCaches,
+  CacheKey,
+  SEARCH_CACHE_TTL_MS,
+} from '../../lib/pageCache';
+import { consumeRateLimit, formatRateLimitMessage, RATE_LIMITS } from '../../lib/rateLimiter';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
@@ -32,6 +40,28 @@ export function SearchPage() {
         setSearching(false);
         return;
       }
+
+      if (userId) {
+        const cached = readCache<PublicProfile[]>(
+          userId,
+          CacheKey.userSearch(term),
+          SEARCH_CACHE_TTL_MS
+        );
+        if (cached.data !== null && !cached.isStale) {
+          setResults(cached.data);
+          setSearchError(null);
+          setSearching(false);
+          return;
+        }
+      }
+
+      const limitResult = consumeRateLimit('usernameSearch', RATE_LIMITS.usernameSearch, userId);
+      if (!limitResult.allowed) {
+        setSearching(false);
+        setSearchError(formatRateLimitMessage('username searches', limitResult.retryAfterSeconds));
+        return;
+      }
+
       setSearching(true);
       setSearchError(null);
       try {
@@ -48,7 +78,11 @@ export function SearchPage() {
           setSearchError('User search failed. Please try again.');
           return;
         }
-        setResults((data ?? []) as PublicProfile[]);
+        const fresh = (data ?? []) as PublicProfile[];
+        setResults(fresh);
+        if (userId) {
+          writeCache(userId, CacheKey.userSearch(term), fresh);
+        }
       } catch {
         if (version !== searchVersion.current) return;
         setResults([]);
@@ -71,6 +105,11 @@ export function SearchPage() {
 
   const sendRequest = async (receiverId: string) => {
     if (!user) return;
+    const limitResult = consumeRateLimit('friendRequest', RATE_LIMITS.friendRequest, user.id);
+    if (!limitResult.allowed) {
+      setActionError(formatRateLimitMessage('friend requests', limitResult.retryAfterSeconds));
+      return;
+    }
     setActionError(null);
     setSending(receiverId);
     try {
@@ -83,6 +122,7 @@ export function SearchPage() {
         );
       } else {
         setSent((prev) => new Set(prev).add(receiverId));
+        invalidateLedgerCaches(user.id);
       }
     } catch {
       setActionError('Could not send request. Check your connection and try again.');

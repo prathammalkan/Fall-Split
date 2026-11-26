@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../lib/supabase';
+import { invalidateLedgerCaches } from '../../lib/pageCache';
+import { toSafeErrorMessage } from '../../lib/errorMessages';
 import { LoadingScreen } from '../../components/ui/LoadingScreen';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Logo } from '../../components/brand/Logo';
@@ -41,9 +43,7 @@ export function InvitePage() {
       setCreatorName(preview.creator_name ?? 'Someone');
       setInviteType(preview.type);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Could not check this invitation. Please try again.'
-      );
+      setError(toSafeErrorMessage(err, 'Could not check this invitation. Please try again.'));
     } finally {
       setLoading(false);
     }
@@ -64,7 +64,7 @@ export function InvitePage() {
       };
       const { data, error: rpcErr } = rpcResult;
       if (rpcErr) {
-        setError(rpcErr.message || 'Failed to accept invitation.');
+        setError(toSafeErrorMessage(rpcErr, 'Failed to accept invitation.'));
         return;
       }
       const result = data;
@@ -72,6 +72,7 @@ export function InvitePage() {
         setError(result.error);
         return;
       }
+      invalidateLedgerCaches(user.id);
       setSuccess(true);
       // Navigate to appropriate page after short delay
       setTimeout(() => {
@@ -82,9 +83,7 @@ export function InvitePage() {
         }
       }, 1500);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to accept invitation. Please try again.'
-      );
+      setError(toSafeErrorMessage(err, 'Failed to accept invitation. Please try again.'));
     } finally {
       setAccepting(false);
     }

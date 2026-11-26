@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateLedgerCaches, CacheKey } from '../../lib/pageCache';
+import { toSafeErrorMessage } from '../../lib/errorMessages';
 import { formatINR } from '../../lib/money';
 import { removeOperationsForExpense } from '../../lib/offlineQueue';
 import { PageHeader } from '../../components/layout/PageHeader';
@@ -79,6 +81,7 @@ export function ExpenseDetailPage() {
   const navigate = useNavigate();
   const [expense, setExpense] = useState<ExpenseData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -93,47 +96,70 @@ export function ExpenseDetailPage() {
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [showConfirmedModal, setShowConfirmedModal] = useState(false);
 
-  const load = useCallback(async () => {
-    if (!expenseId) return;
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const { data, error: err } = await supabase
-        .from('expenses')
-        .select(
-          '*, creator:creator_id (id, display_name, avatar_url, username), group:group_id (id, name, type), expense_payers (user_id, amount_paise, profile:user_id (id, display_name, avatar_url, username)), expense_shares (user_id, amount_paise, percentage, share_weight, profile:user_id (id, display_name, avatar_url, username))'
-        )
-        .eq('id', expenseId)
-        .neq('status', 'deleted')
-        .single();
-      if (err || !data) {
-        setLoadError('Expense not found or access denied.');
-        return;
-      }
-
-      let approvals: ApprovalRow[] = [];
-      try {
-        const { data: approvalData, error: approvalErr } = await supabase
-          .from('expense_approvals')
-          .select(
-            'id, user_id, status, dispute_reason, dispute_category, created_at, responded_at, profile:user_id (id, display_name, avatar_url, username)'
-          )
-          .eq('expense_id', expenseId);
-        if (!approvalErr && approvalData) {
-          approvals = approvalData as unknown as ApprovalRow[];
+  const load = useCallback(
+    async (forceRefresh = false) => {
+      if (!expenseId) return;
+      const cacheUserId = user?.id ?? '';
+      const cached = cacheUserId
+        ? readCache<ExpenseData>(cacheUserId, CacheKey.expenseDetail(expenseId))
+        : { data: null, isStale: true };
+      if (cached.data !== null) {
+        setExpense(cached.data);
+        setLoading(false);
+        if (!cached.isStale && !forceRefresh) {
+          return;
         }
-      } catch {
-        // Table not present yet in unmigrated database
+        setRefreshing(true);
+      } else {
+        setLoading(true);
       }
+      setLoadError(null);
+      try {
+        const { data, error: err } = await supabase
+          .from('expenses')
+          .select(
+            '*, creator:creator_id (id, display_name, avatar_url, username), group:group_id (id, name, type), expense_payers (user_id, amount_paise, profile:user_id (id, display_name, avatar_url, username)), expense_shares (user_id, amount_paise, percentage, share_weight, profile:user_id (id, display_name, avatar_url, username))'
+          )
+          .eq('id', expenseId)
+          .neq('status', 'deleted')
+          .single();
+        if (err || !data) {
+          if (cached.data === null) {
+            setLoadError('Expense not found or access denied.');
+          }
+          return;
+        }
 
-      setExpense({
-        ...(data as unknown as ExpenseData),
-        expense_approvals: approvals,
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [expenseId]);
+        let approvals: ApprovalRow[] = [];
+        try {
+          const { data: approvalData, error: approvalErr } = await supabase
+            .from('expense_approvals')
+            .select(
+              'id, user_id, status, dispute_reason, dispute_category, created_at, responded_at, profile:user_id (id, display_name, avatar_url, username)'
+            )
+            .eq('expense_id', expenseId);
+          if (!approvalErr && approvalData) {
+            approvals = approvalData as unknown as ApprovalRow[];
+          }
+        } catch {
+          // Table not present yet in unmigrated database
+        }
+
+        const fullExpense: ExpenseData = {
+          ...(data as unknown as ExpenseData),
+          expense_approvals: approvals,
+        };
+        setExpense(fullExpense);
+        if (cacheUserId) {
+          writeCache(cacheUserId, CacheKey.expenseDetail(expenseId), fullExpense);
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [expenseId, user?.id]
+  );
 
   useEffect(() => {
     void load();
@@ -153,16 +179,17 @@ export function ExpenseDetailPage() {
       };
 
       if (err) {
-        setApprovalError(err.message || 'Could not approve expense.');
+        setApprovalError(toSafeErrorMessage(err, 'Could not approve expense.'));
         return;
       }
 
       if (res?.all_approved || res?.expense_status === 'confirmed') {
         setShowConfirmedModal(true);
       }
-      await load();
+      invalidateLedgerCaches(user.id);
+      await load(true);
     } catch (e) {
-      setApprovalError(e instanceof Error ? e.message : 'Failed to approve expense.');
+      setApprovalError(toSafeErrorMessage(e, 'Failed to approve expense.'));
     } finally {
       setApproving(false);
     }
@@ -186,15 +213,16 @@ export function ExpenseDetailPage() {
       })) as { error: { message: string } | null };
 
       if (err) {
-        setApprovalError(err.message || 'Could not record dispute.');
+        setApprovalError(toSafeErrorMessage(err, 'Could not record dispute.'));
         return;
       }
 
       setShowDisputeModal(false);
       setDisputeReason('');
-      await load();
+      invalidateLedgerCaches(user.id);
+      await load(true);
     } catch (e) {
-      setApprovalError(e instanceof Error ? e.message : 'Failed to record dispute.');
+      setApprovalError(toSafeErrorMessage(e, 'Failed to record dispute.'));
     } finally {
       setDisputing(false);
     }
@@ -209,19 +237,20 @@ export function ExpenseDetailPage() {
         p_expense_id: expense.id,
       });
       if (deleteErr) {
-        setDeleteError(deleteErr.message || 'Failed to delete expense.');
+        setDeleteError(toSafeErrorMessage(deleteErr, 'Failed to delete expense.'));
         setShowDeleteConfirm(false);
         setDeleting(false);
         return;
       }
       await removeOperationsForExpense(expense.id, user.id);
+      invalidateLedgerCaches(user.id);
       if (expense.group?.id) {
         navigate(`/groups/${expense.group.id}`, { replace: true });
       } else {
         navigate(-1);
       }
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'Failed to delete expense.');
+      setDeleteError(toSafeErrorMessage(err, 'Failed to delete expense.'));
       setShowDeleteConfirm(false);
       setDeleting(false);
     }
@@ -270,6 +299,7 @@ export function ExpenseDetailPage() {
     <div>
       <PageHeader
         title="Expense"
+        subtitle={refreshing ? 'Refreshing…' : undefined}
         back
         actions={
           isCreator ? (

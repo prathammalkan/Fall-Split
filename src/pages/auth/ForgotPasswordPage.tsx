@@ -1,9 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../../context/AuthContext';
+import {
+  formatRateLimitMessage,
+  getCooldownRemainingSeconds,
+  RATE_LIMITS,
+  setCooldownSeconds,
+} from '../../lib/rateLimiter';
 import { Logo } from '../../components/brand/Logo';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
@@ -19,6 +25,17 @@ export function ForgotPasswordPage() {
   const { resetPassword } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const [cooldown, setCooldown] = useState(() =>
+    getCooldownRemainingSeconds(RATE_LIMITS.authPasswordReset.persistKey)
+  );
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setInterval(() => {
+      setCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldown]);
 
   const {
     register,
@@ -31,6 +48,12 @@ export function ForgotPasswordPage() {
 
   const onSubmit = async (data: FormData) => {
     setError(null);
+    if (cooldown > 0) {
+      setError(formatRateLimitMessage('password reset requests', cooldown));
+      return;
+    }
+    setCooldownSeconds(RATE_LIMITS.authPasswordReset.persistKey, 60);
+    setCooldown(60);
     // Always show success — don't reveal if email exists
     await resetPassword(data.email);
     setSent(true);
@@ -87,9 +110,13 @@ export function ForgotPasswordPage() {
               </p>
             )}
           </div>
-          <button type="submit" className="btn-primary w-full" disabled={isSubmitting}>
+          <button
+            type="submit"
+            className="btn-primary w-full"
+            disabled={isSubmitting || cooldown > 0}
+          >
             {isSubmitting ? <Spinner size={18} /> : null}
-            Send reset link
+            {cooldown > 0 ? `Wait ${cooldown}s` : 'Send reset link'}
           </button>
         </form>
 

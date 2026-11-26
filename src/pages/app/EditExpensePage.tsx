@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { invalidateLedgerCaches } from '../../lib/pageCache';
 import { parseINR, formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Spinner } from '../../components/ui/Spinner';
@@ -127,6 +128,11 @@ export function EditExpensePage() {
       return;
     }
 
+    if (!navigator.onLine) {
+      setError('Editing an existing expense requires an internet connection.');
+      return;
+    }
+
     setSaving(true);
     try {
       const { data: updatedExpenseId, error: updateError } = await db.rpc(
@@ -151,6 +157,7 @@ export function EditExpensePage() {
         return;
       }
 
+      invalidateLedgerCaches(user.id);
       navigate(`/expenses/${expenseId}`, { replace: true });
     } catch {
       setError('Failed to save changes. The expense was not updated. Please try again.');

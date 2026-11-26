@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from 'idb';
 import type { OutboxOperation, OutboxOperationType, OutboxState } from '../types';
+import { invalidateLedgerCaches } from './pageCache';
 
 const DB_NAME = 'fall-split-outbox';
 const DB_VERSION = 1;
@@ -243,7 +244,9 @@ export async function getPendingOperations(userId: string): Promise<OutboxOperat
 export async function updateOperationState(
   id: string,
   state: OutboxState,
-  updates?: Partial<Pick<OutboxOperation, 'serverId' | 'lastError' | 'retryCount' | 'conflictInfo'>>
+  updates?: Partial<
+    Pick<OutboxOperation, 'serverId' | 'lastError' | 'retryCount' | 'nextRetryAt' | 'conflictInfo'>
+  >
 ): Promise<void> {
   const db = await getDB();
   const op = await db.get(STORE_NAME, id);
@@ -258,12 +261,46 @@ export async function updateOperationState(
 
   if (state === 'synced') {
     next.lastError = undefined;
+    next.nextRetryAt = undefined;
     next.conflictInfo = undefined;
   } else if (state === 'syncing') {
     next.lastError = undefined;
   }
 
   await db.put(STORE_NAME, next);
+}
+
+export async function getOutboxSummaryForUser(userId: string): Promise<{
+  pending: number;
+  failed: number;
+  conflicts: number;
+  nextRetryDelayMs: number | null;
+}> {
+  if (!userId) return { pending: 0, failed: 0, conflicts: 0, nextRetryDelayMs: null };
+  const db = await getDB();
+  const operations = await db.getAll(STORE_NAME);
+  let pending = 0;
+  let failed = 0;
+  let conflicts = 0;
+  let earliestRetryAt: number | null = null;
+
+  for (const op of operations) {
+    if (getOperationOwnerId(op) !== userId) continue;
+    if (op.state === 'pending' || op.state === 'syncing') pending++;
+    else if (op.state === 'failed') {
+      failed++;
+      const retryAt = op.nextRetryAt ?? Date.now() + calculateRetryDelay(op.retryCount);
+      if (earliestRetryAt === null || retryAt < earliestRetryAt) {
+        earliestRetryAt = retryAt;
+      }
+    } else if (op.state === 'conflict') {
+      conflicts++;
+    }
+  }
+
+  const nextRetryDelayMs =
+    earliestRetryAt === null ? null : Math.max(0, earliestRetryAt - Date.now());
+  return { pending, failed, conflicts, nextRetryDelayMs };
 }
 
 export async function markOperationSynced(id: string, serverId: string): Promise<void> {
@@ -426,8 +463,16 @@ async function syncOperation(
 
 let isSyncInProgress = false;
 
+export interface SyncOptions {
+  /** When true, skips failed items whose exponential backoff `nextRetryAt` has not elapsed. */
+  respectBackoff?: boolean;
+}
+
+const SYNC_INTER_ITEM_DELAY_MS = 75;
+
 export async function syncPendingOperations(
-  supabaseClient: import('@supabase/supabase-js').SupabaseClient
+  supabaseClient: import('@supabase/supabase-js').SupabaseClient,
+  options: SyncOptions = {}
 ): Promise<SyncSummary> {
   const summary: SyncSummary = { synced: 0, failed: 0, conflicts: 0, errors: [] };
   if (isSyncInProgress) {
@@ -443,11 +488,26 @@ export async function syncPendingOperations(
     const pending = await getPendingOperations(user.id);
 
     const db = await getDB();
+    let processedCount = 0;
     for (const op of pending) {
+      if (
+        options.respectBackoff &&
+        op.state === 'failed' &&
+        typeof op.nextRetryAt === 'number' &&
+        op.nextRetryAt > Date.now()
+      ) {
+        continue;
+      }
+
       const currentOp = await db.get(STORE_NAME, op.id);
       if (!currentOp || currentOp.state === 'synced' || currentOp.state === 'conflict') {
         continue;
       }
+
+      if (processedCount > 0 && pending.length > 1) {
+        await new Promise((resolve) => setTimeout(resolve, SYNC_INTER_ITEM_DELAY_MS));
+      }
+      processedCount++;
 
       await updateOperationState(op.id, 'syncing');
       try {
@@ -474,10 +534,12 @@ export async function syncPendingOperations(
             conflict: true,
           });
         } else {
+          const nextRetryCount = op.retryCount + 1;
           const message = result.error ?? 'Expense synchronization failed without an error message';
           await updateOperationState(op.id, 'failed', {
             lastError: message,
-            retryCount: op.retryCount + 1,
+            retryCount: nextRetryCount,
+            nextRetryAt: Date.now() + calculateRetryDelay(nextRetryCount),
           });
           summary.failed++;
           summary.errors.push({
@@ -488,10 +550,12 @@ export async function syncPendingOperations(
           });
         }
       } catch (err) {
+        const nextRetryCount = op.retryCount + 1;
         const message = err instanceof Error ? err.message : 'Unknown synchronization error';
         await updateOperationState(op.id, 'failed', {
           lastError: message,
-          retryCount: op.retryCount + 1,
+          retryCount: nextRetryCount,
+          nextRetryAt: Date.now() + calculateRetryDelay(nextRetryCount),
         });
         summary.failed++;
         summary.errors.push({
@@ -501,6 +565,10 @@ export async function syncPendingOperations(
           conflict: false,
         });
       }
+    }
+
+    if (summary.synced > 0) {
+      invalidateLedgerCaches(user.id);
     }
 
     return summary;

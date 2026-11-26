@@ -1,11 +1,13 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest';
 import {
   readCache,
   writeCache,
   invalidateCache,
   invalidateCachePrefix,
+  invalidateLedgerCaches,
   clearCacheForUser,
   CacheKey,
+  STALE_TTL_MS,
 } from '../lib/pageCache';
 
 const USER_A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
@@ -15,6 +17,10 @@ const USER_B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
 beforeEach(() => {
   clearCacheForUser(USER_A);
   clearCacheForUser(USER_B);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('pageCache — account-scoped in-memory read cache', () => {
@@ -32,15 +38,39 @@ describe('pageCache — account-scoped in-memory read cache', () => {
   });
 
   it('returns data and isStale=true after TTL has passed', () => {
-    // Manually override the cache entry with an old timestamp
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+
     writeCache(USER_A, CacheKey.friendsList, ['alice', 'bob']);
-    // Directly manipulate the entry age by re-writing with an old cachedAt
-    // We test the stale condition by checking that data=not-null, isStale=true when old.
-    // Since we cannot advance time without vi.useFakeTimers (which conflicts here),
-    // we verify the flag via a unit check of the module boundary:
-    const fresh = readCache<string[]>(USER_A, CacheKey.friendsList);
-    expect(fresh.data).toEqual(['alice', 'bob']);
-    expect(fresh.isStale).toBe(false); // Just written — should be fresh
+    expect(readCache<string[]>(USER_A, CacheKey.friendsList)).toEqual({
+      data: ['alice', 'bob'],
+      isStale: false,
+    });
+
+    now += STALE_TTL_MS + 1;
+    expect(readCache<string[]>(USER_A, CacheKey.friendsList)).toEqual({
+      data: ['alice', 'bob'],
+      isStale: true,
+    });
+  });
+
+  it('invalidateLedgerCaches clears all user ledger views including detail prefixes', () => {
+    writeCache(USER_A, CacheKey.homeBalances, { netPaise: 100 });
+    writeCache(USER_A, CacheKey.friendsList, ['alice']);
+    writeCache(USER_A, CacheKey.friendDetail('alice'), { netPaise: 100 });
+    writeCache(USER_A, CacheKey.groupDetail('g1'), { id: 'g1' });
+    writeCache(USER_A, CacheKey.expenseDetail('e1'), { id: 'e1' });
+    writeCache(USER_A, CacheKey.userSearch('ali'), ['alice']);
+
+    invalidateLedgerCaches(USER_A);
+
+    expect(readCache(USER_A, CacheKey.homeBalances).data).toBeNull();
+    expect(readCache(USER_A, CacheKey.friendsList).data).toBeNull();
+    expect(readCache(USER_A, CacheKey.friendDetail('alice')).data).toBeNull();
+    expect(readCache(USER_A, CacheKey.groupDetail('g1')).data).toBeNull();
+    expect(readCache(USER_A, CacheKey.expenseDetail('e1')).data).toBeNull();
+    // Search cache is independent of ledger mutations
+    expect(readCache(USER_A, CacheKey.userSearch('ali')).data).toEqual(['alice']);
   });
 
   it('isolates cache by userId — USER_A and USER_B do not share data', () => {

@@ -151,6 +151,7 @@ export interface OutboxOperation {
   createdAt: number; // Unix ms
   updatedAt: number;
   retryCount: number;
+  nextRetryAt?: number; // Unix ms — earliest time for automatic backoff retry
   lastError?: string;
   serverId?: string; // Set after successful sync
   conflictInfo?: unknown;

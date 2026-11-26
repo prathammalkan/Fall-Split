@@ -19,15 +19,59 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
  * It is NEVER exposed to the browser.
  */
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+const BASE_SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Cache-Control': 'no-store',
 };
 
+function resolveCorsHeaders(req: Request): Record<string, string> | null {
+  const configured = Deno.env.get('ALLOWED_ORIGINS');
+  const origin = req.headers.get('Origin');
+
+  if (configured && configured.trim().length > 0) {
+    const allowed = configured
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (origin && !allowed.includes(origin)) {
+      return null;
+    }
+    return {
+      ...BASE_SECURITY_HEADERS,
+      'Access-Control-Allow-Origin': origin && allowed.includes(origin) ? origin : allowed[0]!,
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+      Vary: 'Origin',
+    };
+  }
+
+  return {
+    ...BASE_SECURITY_HEADERS,
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  };
+}
+
 serve(async (req: Request) => {
+  const corsHeaders = resolveCorsHeaders(req);
+  if (!corsHeaders) {
+    return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+      status: 403,
+      headers: { ...BASE_SECURITY_HEADERS, 'Content-Type': 'application/json' },
+    });
+  }
+
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
+  }
+
+  if (req.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
   }
 
   try {

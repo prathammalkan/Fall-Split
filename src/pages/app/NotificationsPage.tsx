@@ -46,36 +46,47 @@ export function NotificationsPage() {
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!user) return;
-    const userId = user.id;
-    // Serve cached notifications immediately (stale-while-revalidate)
-    const cached = readCache<Notification[]>(userId, CacheKey.notifications);
-    if (cached.data !== null) {
-      setNotifications(cached.data);
+  const load = useCallback(
+    async (forceRefresh = false) => {
+      if (!user) return;
+      const userId = user.id;
+      // Serve cached notifications immediately (stale-while-revalidate)
+      const cached = readCache<Notification[]>(userId, CacheKey.notifications);
+      if (cached.data !== null) {
+        setNotifications(cached.data);
+        setLoading(false);
+        if (!cached.isStale && !forceRefresh) {
+          return;
+        }
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+      const { data, error: loadError } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (loadError) {
+        if (cached.data === null) {
+          setError('Notifications could not be loaded. Please try again.');
+          setNotifications([]);
+        }
+      } else {
+        const fresh = data ?? [];
+        setNotifications(fresh);
+        writeCache(userId, CacheKey.notifications, fresh);
+      }
       setLoading(false);
-    } else {
-      setLoading(true);
-    }
-    setError(null);
-    const { data, error: loadError } = await supabase
-      .from('notifications')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(50);
-    if (loadError) {
-      setError('Notifications could not be loaded. Please try again.');
-      setNotifications([]);
-    } else {
-      const fresh = data ?? [];
-      setNotifications(fresh);
-      writeCache(userId, CacheKey.notifications, fresh);
-    }
-    setLoading(false);
-  }, [user]);
+      setRefreshing(false);
+    },
+    [user]
+  );
 
   useEffect(() => {
     void load();
@@ -93,10 +104,12 @@ export function NotificationsPage() {
       return;
     }
     invalidateCache(user.id, CacheKey.notifications);
-    void load();
+    invalidateCache(user.id, CacheKey.homeBalances);
+    void load(true);
   };
 
   const markRead = async (id: string) => {
+    if (!user) return;
     const { error: updateError } = await db
       .from('notifications')
       .update({ read_at: new Date().toISOString() })
@@ -106,9 +119,14 @@ export function NotificationsPage() {
       setError('Notification could not be updated. Please try again.');
       return;
     }
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n))
-    );
+    setNotifications((prev) => {
+      const updated = prev.map((n) =>
+        n.id === id ? { ...n, read_at: new Date().toISOString() } : n
+      );
+      writeCache(user.id, CacheKey.notifications, updated);
+      return updated;
+    });
+    invalidateCache(user.id, CacheKey.homeBalances);
   };
 
   const handleNotificationClick = async (n: Notification) => {
@@ -127,6 +145,7 @@ export function NotificationsPage() {
     <div>
       <PageHeader
         title="Notifications"
+        subtitle={refreshing ? 'Refreshing…' : undefined}
         back
         actions={
           hasUnread ? (
@@ -142,7 +161,7 @@ export function NotificationsPage() {
             <Spinner size={24} />
           </div>
         ) : error ? (
-          <ErrorMessage message={error} retry={() => void load()} />
+          <ErrorMessage message={error} retry={() => void load(true)} />
         ) : notifications.length === 0 ? (
           <EmptyState icon={Bell} title="No notifications" description="You're all caught up" />
         ) : (

@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateLedgerCaches, CacheKey } from '../../lib/pageCache';
+import { consumeRateLimit, formatRateLimitMessage, RATE_LIMITS } from '../../lib/rateLimiter';
+import { buildSafeUpiUrl, toSafeErrorMessage } from '../../lib/errorMessages';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
@@ -46,6 +49,7 @@ export function FriendDetailPage() {
   const [friendProfile, setFriendProfile] = useState<Profile | null>(null);
   const [netPaise, setNetPaise] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settling, setSettling] = useState(false);
   const [settleAmount, setSettleAmount] = useState('');
@@ -63,44 +67,74 @@ export function FriendDetailPage() {
   const [pendingSettlements, setPendingSettlements] = useState<PendingSettlementItem[]>([]);
   const [pendingExpenses, setPendingExpenses] = useState<PendingExpenseItem[]>([]);
 
-  const load = useCallback(async () => {
-    if (!friendId || !user) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data, error: err } = await db.rpc('get_profile_for_user', {
-        p_user_id: friendId,
-      });
+  const load = useCallback(
+    async (forceRefresh = false) => {
+      if (!friendId || !user) return;
+      const cached = readCache<{
+        friendProfile: Profile;
+        netPaise: number;
+        pendingSettlements: PendingSettlementItem[];
+        pendingExpenses: PendingExpenseItem[];
+      }>(user.id, CacheKey.friendDetail(friendId));
 
-      const profile = data?.[0];
-      if (err || !profile) {
-        setError('User not found.');
-        return;
+      if (cached.data !== null) {
+        setFriendProfile(cached.data.friendProfile);
+        setNetPaise(cached.data.netPaise);
+        setPendingSettlements(cached.data.pendingSettlements);
+        setPendingExpenses(cached.data.pendingExpenses);
+        setBalanceLoaded(true);
+        setLoading(false);
+        if (!cached.isStale && !forceRefresh) {
+          return;
+        }
+        setRefreshing(true);
+      } else {
+        setLoading(true);
       }
-      setFriendProfile(profile as Profile);
-
-      // Use the server-side RPC for accurate multi-payer balance
-      const { data: balances, error: rpcErr } = await supabase.rpc('get_friend_balances');
-      if (rpcErr) throw rpcErr;
-      const balanceRows = (balances ?? []) as { other_user_id: string; net_paise: number }[];
-      const friendBal = balanceRows.find((b) => b.other_user_id === friendId);
-      setNetPaise(friendBal ? Number(friendBal.net_paise) : 0);
-      setBalanceLoaded(true);
-
-      // Query pending settlements between user and this friend
-      const { data: settlementsData } = await supabase
-        .from('settlements')
-        .select('id, payer_id, recipient_id, amount_paise, status, created_at')
-        .or(
-          `and(payer_id.eq.${user.id},recipient_id.eq.${friendId}),and(payer_id.eq.${friendId},recipient_id.eq.${user.id})`
-        )
-        .in('status', ['proposed', 'pending'])
-        .order('created_at', { ascending: false });
-
-      setPendingSettlements((settlementsData ?? []) as PendingSettlementItem[]);
-
-      // Query pending/disputed expenses involving both users
+      setError(null);
       try {
+        // Run profile, balances, pending settlements, and pending expenses in parallel
+        const [profileRes, balancesRes, settlementsRes, expensesRes] = await Promise.all([
+          db.rpc('get_profile_for_user', { p_user_id: friendId }),
+          supabase.rpc('get_friend_balances'),
+          supabase
+            .from('settlements')
+            .select('id, payer_id, recipient_id, amount_paise, status, created_at')
+            .or(
+              `and(payer_id.eq.${user.id},recipient_id.eq.${friendId}),and(payer_id.eq.${friendId},recipient_id.eq.${user.id})`
+            )
+            .in('status', ['proposed', 'pending'])
+            .order('created_at', { ascending: false }),
+          Promise.resolve(
+            supabase
+              .from('expenses')
+              .select(
+                `
+            id, title, amount_paise, status, created_at,
+            expense_payers (user_id, amount_paise),
+            expense_shares (user_id, amount_paise)
+          `
+              )
+              .in('status', ['pending_approval', 'disputed'])
+              .limit(20)
+          ).catch(() => ({ data: null })),
+        ]);
+
+        const profile = profileRes.data?.[0] as Profile | undefined;
+        if (profileRes.error || !profile) {
+          if (cached.data === null) setError('User not found.');
+          return;
+        }
+        if (balancesRes.error) throw balancesRes.error;
+
+        const balanceRows = (balancesRes.data ?? []) as {
+          other_user_id: string;
+          net_paise: number;
+        }[];
+        const friendBal = balanceRows.find((b) => b.other_user_id === friendId);
+        const nextNetPaise = friendBal ? Number(friendBal.net_paise) : 0;
+        const nextPendingSettlements = (settlementsRes.data ?? []) as PendingSettlementItem[];
+
         interface RawExpenseRow {
           id: string;
           title: string;
@@ -110,52 +144,50 @@ export function FriendDetailPage() {
           expense_payers: Array<{ user_id: string; amount_paise: number }>;
           expense_shares: Array<{ user_id: string; amount_paise: number }>;
         }
+        const rawExps = (expensesRes.data ?? []) as unknown as RawExpenseRow[];
+        const nextPendingExpenses: PendingExpenseItem[] = rawExps
+          .filter((e) => {
+            const users = new Set([
+              ...(e.expense_payers?.map((p) => p.user_id) ?? []),
+              ...(e.expense_shares?.map((s) => s.user_id) ?? []),
+            ]);
+            return users.has(user.id) && users.has(friendId);
+          })
+          .map((e) => {
+            const myShare = e.expense_shares?.find((s) => s.user_id === user.id);
+            return {
+              id: e.id,
+              title: e.title,
+              amount_paise: e.amount_paise,
+              user_share_paise: myShare?.amount_paise ?? 0,
+              status: e.status,
+              created_at: e.created_at,
+            };
+          });
 
-        const { data: exps } = await supabase
-          .from('expenses')
-          .select(
-            `
-            id, title, amount_paise, status, created_at,
-            expense_payers (user_id, amount_paise),
-            expense_shares (user_id, amount_paise)
-          `
-          )
-          .in('status', ['pending_approval', 'disputed'])
-          .limit(20);
+        setFriendProfile(profile);
+        setNetPaise(nextNetPaise);
+        setBalanceLoaded(true);
+        setPendingSettlements(nextPendingSettlements);
+        setPendingExpenses(nextPendingExpenses);
 
-        if (exps) {
-          const rawRows = exps as unknown as RawExpenseRow[];
-          const sharedPending = rawRows
-            .filter((e) => {
-              const users = new Set([
-                ...(e.expense_payers?.map((p) => p.user_id) ?? []),
-                ...(e.expense_shares?.map((s) => s.user_id) ?? []),
-              ]);
-              return users.has(user.id) && users.has(friendId);
-            })
-            .map((e) => {
-              const myShare = e.expense_shares?.find((s) => s.user_id === user.id);
-              return {
-                id: e.id,
-                title: e.title,
-                amount_paise: e.amount_paise,
-                user_share_paise: myShare?.amount_paise ?? 0,
-                status: e.status,
-                created_at: e.created_at,
-              };
-            });
-          setPendingExpenses(sharedPending);
-        }
+        writeCache(user.id, CacheKey.friendDetail(friendId), {
+          friendProfile: profile,
+          netPaise: nextNetPaise,
+          pendingSettlements: nextPendingSettlements,
+          pendingExpenses: nextPendingExpenses,
+        });
       } catch {
-        // Fallback if status enum extension not yet applied
-        setPendingExpenses([]);
+        if (cached.data === null) {
+          setError('Could not load this balance. Please try again.');
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-    } catch {
-      setError('Could not load this balance. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  }, [friendId, user]);
+    },
+    [friendId, user]
+  );
 
   useEffect(() => {
     void load();
@@ -193,6 +225,17 @@ export function FriendDetailPage() {
     const paise = parseINR(settleAmount);
     if (!paise || paise <= 0) return;
 
+    const limitResult = consumeRateLimit(
+      'settlementPropose',
+      RATE_LIMITS.settlementPropose,
+      user.id
+    );
+    if (!limitResult.allowed) {
+      setSettleError(formatRateLimitMessage('settlement requests', limitResult.retryAfterSeconds));
+      setShowConfirmDialog(false);
+      return;
+    }
+
     setSettling(true);
     const idempotencyKey = settlementKey || crypto.randomUUID();
     setSettlementKey(idempotencyKey);
@@ -204,7 +247,7 @@ export function FriendDetailPage() {
     setSettling(false);
 
     if (insErr) {
-      setSettleError('Could not create settlement. Please try again.');
+      setSettleError(toSafeErrorMessage(insErr, 'Could not create settlement. Please try again.'));
       setShowConfirmDialog(false);
       return;
     }
@@ -216,7 +259,8 @@ export function FriendDetailPage() {
     setReportedNotice(
       `Payment of ${formatINR(paise)} reported to ${friendProfile?.display_name}. Awaiting their confirmation. Unconfirmed payments do not reduce your confirmed balance until accepted.`
     );
-    await load();
+    invalidateLedgerCaches(user.id);
+    await load(true);
   };
 
   // Recipient actions (Requirement D3)
@@ -231,11 +275,15 @@ export function FriendDetailPage() {
     setActionLoading(null);
     if (rpcErr) {
       setError(
-        `Could not ${action === 'confirm' ? 'confirm' : 'decline'} payment. ${rpcErr.message}`
+        toSafeErrorMessage(
+          rpcErr,
+          `Could not ${action === 'confirm' ? 'confirm' : 'decline'} payment.`
+        )
       );
       return;
     }
-    await load();
+    invalidateLedgerCaches(user.id);
+    await load(true);
   };
 
   // Payer cancel action
@@ -248,10 +296,11 @@ export function FriendDetailPage() {
     });
     setActionLoading(null);
     if (rpcErr) {
-      setError(`Could not cancel payment. ${rpcErr.message}`);
+      setError(toSafeErrorMessage(rpcErr, 'Could not cancel payment.'));
       return;
     }
-    await load();
+    invalidateLedgerCaches(user.id);
+    await load(true);
   };
 
   if (loading)
@@ -268,15 +317,19 @@ export function FriendDetailPage() {
     );
 
   const upiLink =
-    friendProfile.upi_id && netPaise < 0
-      ? `upi://pay?pa=${encodeURIComponent(friendProfile.upi_id)}&pn=${encodeURIComponent(friendProfile.display_name.substring(0, 40))}&am=${(Math.abs(netPaise) / 100).toFixed(2)}&cu=INR`
+    netPaise < 0
+      ? buildSafeUpiUrl(friendProfile.upi_id, Math.abs(netPaise), friendProfile.display_name)
       : null;
 
   const paiseToSettle = parseINR(settleAmount) || Math.abs(netPaise);
 
   return (
     <div>
-      <PageHeader title={friendProfile.display_name} back />
+      <PageHeader
+        title={friendProfile.display_name}
+        subtitle={refreshing ? 'Refreshing…' : undefined}
+        back
+      />
       <div className="page-content space-y-4 pt-4">
         {/* Profile card */}
         <div className="card flex flex-col items-center gap-3">
@@ -485,7 +538,6 @@ export function FriendDetailPage() {
               <a
                 href={upiLink}
                 className="btn-primary flex-1 text-center"
-                target="_blank"
                 rel="noopener noreferrer"
                 aria-label={`Pay ${friendProfile.display_name} via UPI`}
               >
@@ -504,22 +556,16 @@ export function FriendDetailPage() {
 
         {/* Settle up entry modal */}
         {showSettle && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center px-4"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Settle up with ${friendProfile.display_name}`}
+          <SheetDialog
+            title={`Settle up with ${friendProfile.display_name}`}
+            onClose={() => {
+              setShowSettle(false);
+              setSettleAmount('');
+              setSettleError(null);
+              setSettlementKey('');
+            }}
           >
-            <div
-              className="absolute inset-0 bg-black/50"
-              onClick={() => {
-                setShowSettle(false);
-                setSettleAmount('');
-                setSettleError(null);
-              }}
-              aria-hidden="true"
-            />
-            <div className="relative z-10 w-full max-w-md rounded-2xl border border-[rgb(var(--color-border))] bg-[rgb(var(--color-bg))] p-5 shadow-2xl">
+            <div className="p-5">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-medium tracking-[0.16em] text-[rgb(var(--color-pending))] uppercase">
@@ -594,7 +640,7 @@ export function FriendDetailPage() {
                 </button>
               </div>
             </div>
-          </div>
+          </SheetDialog>
         )}
 
         {/* Requirement D1: Confirmation sheet/dialog */}

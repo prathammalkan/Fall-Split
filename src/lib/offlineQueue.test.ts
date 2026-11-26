@@ -442,4 +442,26 @@ describe('offlineQueue', () => {
     expect(result1.synced + result2.synced).toBe(1);
     expect(rpc).toHaveBeenCalledTimes(1);
   });
+
+  it('defers failed operations during backoff when respectBackoff is true, but allows immediate manual retry', async () => {
+    const key = 'backoff-schedule-key';
+    await queuePayload(key);
+    const { client, rpc } = createClient({ loseFirstResponse: true });
+
+    const first = await syncPendingOperations(client, { respectBackoff: true });
+    expect(first.failed).toBe(1);
+    const [opAfterFail] = await getAllOperations();
+    expect(opAfterFail?.nextRetryAt).toBeGreaterThan(Date.now() - 5000);
+
+    // Automatic retry before nextRetryAt skips the operation (0 RPC calls)
+    const deferred = await syncPendingOperations(client, { respectBackoff: true });
+    expect(deferred.synced).toBe(0);
+    expect(deferred.failed).toBe(0);
+    expect(rpc).toHaveBeenCalledTimes(1);
+
+    // Manual retry (default respectBackoff=false) runs immediately and succeeds
+    const manual = await syncPendingOperations(client);
+    expect(manual.synced).toBe(1);
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
 });

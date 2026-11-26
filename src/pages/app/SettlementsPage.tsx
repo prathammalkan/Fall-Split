@@ -1,8 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Handshake, Plus, Check, X, ExternalLink, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateLedgerCaches, CacheKey } from '../../lib/pageCache';
+import { buildSafeUpiUrl } from '../../lib/errorMessages';
 import { formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
@@ -57,46 +59,89 @@ export function SettlementsPage() {
   const navigate = useNavigate();
   const [settlements, setSettlements] = useState<Settlement[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [dismissedPendingIds, setDismissedPendingIds] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'confirmed' | 'closed'>(
+    'all'
+  );
 
-  const load = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
-    const { data, error: fetchErr } = await supabase
-      .from('settlements')
-      .select(
-        `*, payer:payer_id (id, display_name, avatar_url), recipient:recipient_id (id, display_name, avatar_url)`
-      )
-      .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
-      .order('created_at', { ascending: false });
-    if (fetchErr) {
-      setError('Could not load settlements. Please try again.');
-    } else {
-      const { data: upiData, error: upiError } = await db.rpc('get_settlement_recipient_upis');
-      if (upiError) {
-        setError('Could not load settlement payment details. Please try again.');
+  const load = useCallback(
+    async (forceRefresh = false) => {
+      if (!user) return;
+      const cached = readCache<Settlement[]>(user.id, CacheKey.settlementsList);
+      if (cached.data !== null) {
+        setSettlements(cached.data);
+        setLoading(false);
+        if (!cached.isStale && !forceRefresh) {
+          return;
+        }
+        setRefreshing(true);
       } else {
-        const upiRows = (upiData ?? []) as { settlement_id: string; upi_id: string | null }[];
-        const upiBySettlementId = new Map(
-          (upiRows ?? []).map((row) => [row.settlement_id, row.upi_id])
-        );
-        const settlementRows = (data ?? []) as unknown as Settlement[];
-        setSettlements(
-          settlementRows.map((row) => ({
+        setLoading(true);
+      }
+      setError(null);
+      try {
+        const [settlementsRes, upiRes] = await Promise.all([
+          supabase
+            .from('settlements')
+            .select(
+              `*, payer:payer_id (id, display_name, avatar_url), recipient:recipient_id (id, display_name, avatar_url)`
+            )
+            .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
+            .order('created_at', { ascending: false }),
+          db.rpc('get_settlement_recipient_upis'),
+        ]);
+        if (settlementsRes.error) {
+          if (cached.data === null) {
+            setError('Could not load settlements. Please try again.');
+          }
+        } else if (upiRes.error) {
+          if (cached.data === null) {
+            setError('Could not load settlement payment details. Please try again.');
+          }
+        } else {
+          const upiRows = (upiRes.data ?? []) as { settlement_id: string; upi_id: string | null }[];
+          const upiBySettlementId = new Map(
+            (upiRows ?? []).map((row) => [row.settlement_id, row.upi_id])
+          );
+          const settlementRows = (settlementsRes.data ?? []) as unknown as Settlement[];
+          const enriched = settlementRows.map((row) => ({
             ...row,
             recipient_upi_id: upiBySettlementId.get(row.id) ?? null,
-          }))
-        );
+          }));
+          setSettlements(enriched);
+          writeCache(user.id, CacheKey.settlementsList, enriched);
+        }
+      } catch {
+        if (cached.data === null) {
+          setError('Could not load settlements. Please try again.');
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-    }
-    setLoading(false);
-  }, [user]);
+    },
+    [user]
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const filteredSettlements = useMemo(() => {
+    if (statusFilter === 'all') return settlements;
+    if (statusFilter === 'pending') {
+      return settlements.filter((s) => s.status === 'proposed' || s.status === 'pending');
+    }
+    if (statusFilter === 'confirmed') {
+      return settlements.filter((s) => s.status === 'confirmed');
+    }
+    return settlements.filter(
+      (s) => s.status === 'rejected' || s.status === 'disputed' || s.status === 'cancelled'
+    );
+  }, [settlements, statusFilter]);
 
   const pendingIncoming = settlements.filter(
     (settlement) =>
@@ -135,7 +180,8 @@ export function SettlementsPage() {
       setError('Could not confirm this payment. The other party may have already cancelled it.');
       return;
     }
-    void load();
+    invalidateLedgerCaches(user.id);
+    void load(true);
   };
 
   const rejectSettlement = async (id: string) => {
@@ -151,7 +197,8 @@ export function SettlementsPage() {
       setError('Could not decline this settlement.');
       return;
     }
-    void load();
+    invalidateLedgerCaches(user.id);
+    void load(true);
   };
 
   const cancelSettlement = async (id: string) => {
@@ -166,12 +213,8 @@ export function SettlementsPage() {
       setError('Could not cancel this settlement.');
       return;
     }
-    void load();
-  };
-
-  const buildUpiLink = (upiId: string, amountPaise: number, name: string): string => {
-    const rupees = (amountPaise / 100).toFixed(2);
-    return `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(name.substring(0, 40))}&am=${rupees}&cu=INR`;
+    invalidateLedgerCaches(user.id);
+    void load(true);
   };
 
   return (
@@ -204,6 +247,7 @@ export function SettlementsPage() {
 
       <PageHeader
         title="Settlements"
+        subtitle={refreshing ? 'Refreshing…' : undefined}
         back
         actions={
           <button
@@ -217,7 +261,33 @@ export function SettlementsPage() {
         }
       />
       <div className="page-content pt-4">
-        {error && <ErrorMessage message={error} />}
+        {error && <ErrorMessage message={error} retry={() => void load(true)} />}
+
+        {settlements.length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {(
+              [
+                { value: 'all', label: 'All' },
+                { value: 'pending', label: 'Pending' },
+                { value: 'confirmed', label: 'Confirmed' },
+                { value: 'closed', label: 'Declined / Cancelled' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                onClick={() => setStatusFilter(tab.value)}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                  statusFilter === tab.value
+                    ? 'bg-[rgb(var(--color-accent))] text-white'
+                    : 'bg-tertiary text-secondary'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {pendingIncoming.length > 0 && (
           <div className="card mb-3">
@@ -258,15 +328,23 @@ export function SettlementsPage() {
             title="No settlements yet"
             description="When you settle a debt with someone, it will appear here. Go to a friend's page and tap 'Settle up' to get started."
           />
+        ) : filteredSettlements.length === 0 ? (
+          <p className="text-muted py-8 text-center text-sm">
+            No settlements match the selected filter.
+          </p>
         ) : (
           <div className="space-y-3">
-            {settlements.map((s) => {
+            {filteredSettlements.map((s) => {
               const isPayer = s.payer_id === user?.id;
               const isRecipient = s.recipient_id === user?.id;
               const other = isPayer ? s.recipient : s.payer;
               const canConfirm = isRecipient && (s.status === 'proposed' || s.status === 'pending');
               const canCancel = isPayer && (s.status === 'proposed' || s.status === 'pending');
-              const recipientUpi = s.recipient_upi_id;
+              const safeUpiUrl = buildSafeUpiUrl(
+                s.recipient_upi_id,
+                s.amount_paise,
+                other.display_name
+              );
               const isLoading = actionLoading === s.id;
 
               return (
@@ -294,33 +372,30 @@ export function SettlementsPage() {
                   {s.notes && <p className="text-muted mb-3 text-xs italic">"{s.notes}"</p>}
 
                   {/* UPI payment note for payer */}
-                  {isPayer &&
-                    recipientUpi &&
-                    (s.status === 'proposed' || s.status === 'pending') && (
-                      <div className="mb-3 rounded-lg border border-[rgb(var(--color-pending)/0.2)] bg-[rgb(var(--color-pending)/0.08)] p-2.5">
-                        <div className="flex items-start gap-2">
-                          <AlertCircle
-                            size={14}
-                            className="mt-0.5 flex-shrink-0 text-[rgb(var(--color-pending))]"
-                            aria-hidden="true"
-                          />
-                          <p className="text-muted text-xs">
-                            Opening UPI does not automatically confirm payment. The recipient must
-                            confirm receipt before your balance updates.
-                          </p>
-                        </div>
+                  {isPayer && safeUpiUrl && (s.status === 'proposed' || s.status === 'pending') && (
+                    <div className="mb-3 rounded-lg border border-[rgb(var(--color-pending)/0.2)] bg-[rgb(var(--color-pending)/0.08)] p-2.5">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle
+                          size={14}
+                          className="mt-0.5 flex-shrink-0 text-[rgb(var(--color-pending))]"
+                          aria-hidden="true"
+                        />
+                        <p className="text-muted text-xs">
+                          Opening UPI does not automatically confirm payment. The recipient must
+                          confirm receipt before your balance updates.
+                        </p>
                       </div>
-                    )}
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap gap-2">
                     {/* UPI pay button */}
                     {isPayer &&
-                      recipientUpi &&
+                      safeUpiUrl &&
                       (s.status === 'proposed' || s.status === 'pending') && (
                         <a
-                          href={buildUpiLink(recipientUpi, s.amount_paise, other.display_name)}
+                          href={safeUpiUrl}
                           className="btn-secondary px-3 py-1.5 text-sm"
-                          target="_blank"
                           rel="noopener noreferrer"
                           aria-label={`Pay ${other.display_name} via UPI`}
                         >

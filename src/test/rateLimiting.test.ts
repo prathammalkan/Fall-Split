@@ -20,6 +20,7 @@ import {
   BASE_RETRY_DELAY_MS,
   MAX_RETRY_DELAY_MS,
 } from '../lib/offlineQueue';
+import { RATE_LIMITS } from '../lib/rateLimiter';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -125,8 +126,18 @@ describe('Rate limiting — application-level protections', () => {
       //   - OAuth: handled by Google/Apple OAuth servers
       // PostgREST enforces connection limits via pgbouncer pool settings.
       // bulk_delete_my_expenses: max 100 IDs per call (enforced server-side).
-      // No client-configurable rate-limit service is integrated.
       expect(true).toBe(true);
+    });
+
+    it('configures on-device rate-limit policies for search, mutations, and auth', () => {
+      expect(RATE_LIMITS.usernameSearch.maxRequests).toBeLessThanOrEqual(15);
+      expect(RATE_LIMITS.friendRequest.maxRequests).toBeLessThanOrEqual(10);
+      expect(RATE_LIMITS.inviteGenerate.maxRequests).toBeLessThanOrEqual(10);
+      expect(RATE_LIMITS.expenseCreate.maxRequests).toBeLessThanOrEqual(15);
+      expect(RATE_LIMITS.settlementPropose.maxRequests).toBeLessThanOrEqual(10);
+      expect(RATE_LIMITS.authSignIn.maxRequests).toBe(5);
+      expect(RATE_LIMITS.authMagicLink.windowMs).toBe(60_000);
+      expect(RATE_LIMITS.authPasswordReset.windowMs).toBe(60_000);
     });
   });
 });

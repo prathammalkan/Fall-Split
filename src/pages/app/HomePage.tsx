@@ -18,7 +18,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
+import { readCache, writeCache, invalidateLedgerCaches, CacheKey } from '../../lib/pageCache';
 import { supabase, db } from '../../lib/supabase';
 import { formatINR } from '../../lib/money';
 import { Avatar } from '../../components/ui/Avatar';
@@ -80,11 +80,22 @@ interface PendingSettlementNotice {
 
 type LoadState = 'loading' | 'loaded' | 'error' | 'empty';
 
+interface HomeSnapshot {
+  data: HomeData;
+  awaitingMyApproval: PendingApprovalExpense[];
+  submittedAwaiting: SubmittedAwaitingExpense[];
+  disputedExpenses: DisputedExpenseItem[];
+  pendingSettlements: PendingSettlementNotice[];
+  unreadCount: number;
+  refreshedAt: number;
+}
+
 export function HomePage() {
   const { user, emailVerified } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState<HomeData | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
+  const [refreshing, setRefreshing] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
@@ -95,273 +106,279 @@ export function HomePage() {
   const [pendingSettlements, setPendingSettlements] = useState<PendingSettlementNotice[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const loadHomeData = useCallback(async () => {
-    if (!user) return;
-    const userId = user.id;
-    // Serve cached balances immediately (stale-while-revalidate)
-    const { data: cached } = readCache<HomeData>(userId, CacheKey.homeBalances);
-    if (cached !== null) {
-      setData(cached);
-      setLoadState('loaded');
-    } else {
-      setLoadState('loading');
-    }
-    try {
-      // 1. Load confirmed balances
-      const { data: balances, error: rpcError } = await supabase.rpc('get_friend_balances');
-      if (rpcError) throw rpcError;
+  const applySnapshot = useCallback((snap: HomeSnapshot) => {
+    setData(snap.data);
+    setAwaitingMyApproval(snap.awaitingMyApproval);
+    setSubmittedAwaiting(snap.submittedAwaiting);
+    setDisputedExpenses(snap.disputedExpenses);
+    setPendingSettlements(snap.pendingSettlements);
+    setUnreadCount(snap.unreadCount);
+    setLastRefreshed(new Date(snap.refreshedAt));
+  }, []);
 
-      let rawBalances = (balances ?? []) as { other_user_id: string; net_paise: number }[];
-
-      if (rawBalances.length === 0) {
-        setData({ netPaise: 0, owedToPaise: 0, owingPaise: 0, youOwe: [], owedToYou: [] });
+  const loadHomeData = useCallback(
+    async (forceRefresh = false) => {
+      if (!user) return;
+      const userId = user.id;
+      const { data: cached, isStale } = readCache<HomeSnapshot>(userId, CacheKey.homeBalances);
+      if (cached !== null) {
+        applySnapshot(cached);
+        setLoadState('loaded');
+        if (!isStale && !forceRefresh) {
+          return;
+        }
+        setRefreshing(true);
       } else {
-        const otherIds = rawBalances.map((b) => b.other_user_id);
-        const { data: profileData, error: profileError } = await supabase
-          .from('discoverable_profiles')
-          .select('id, username, display_name, avatar_url')
-          .in('id', otherIds);
-        if (profileError) throw profileError;
-        const profiles = (profileData ?? []) as unknown as Profile[];
-        const missingProfileIds = otherIds.filter(
-          (id) => !profiles.some((profile) => profile.id === id)
-        );
-        if (missingProfileIds.length > 0) {
-          rawBalances = rawBalances.filter(
-            (balance) => !missingProfileIds.includes(balance.other_user_id)
-          );
-        }
-
-        let owedToPaise = 0;
-        let owingPaise = 0;
-        const youOwe: FriendBalance[] = [];
-        const owedToYou: FriendBalance[] = [];
-
-        for (const b of rawBalances) {
-          if (Math.abs(b.net_paise) < 1) continue;
-          const prof = profiles.find((p) => p.id === b.other_user_id);
-          if (!prof) continue;
-
-          const entry: FriendBalance = {
-            userId: b.other_user_id,
-            profile: prof,
-            netPaise: b.net_paise,
-          };
-
-          if (b.net_paise > 0) {
-            owedToPaise += b.net_paise;
-            owedToYou.push(entry);
-          } else {
-            owingPaise += Math.abs(b.net_paise);
-            youOwe.push(entry);
-          }
-        }
-
-        owedToYou.sort((a, b) => b.netPaise - a.netPaise);
-        youOwe.sort((a, b) => Math.abs(b.netPaise) - Math.abs(a.netPaise));
-
-        setData({
-          netPaise: owedToPaise - owingPaise,
-          owedToPaise,
-          owingPaise,
-          youOwe: youOwe.slice(0, 5),
-          owedToYou: owedToYou.slice(0, 5),
-        });
-        writeCache(userId, CacheKey.homeBalances, {
-          netPaise: owedToPaise - owingPaise,
-          owedToPaise,
-          owingPaise,
-          youOwe: youOwe.slice(0, 5),
-          owedToYou: owedToYou.slice(0, 5),
-        });
+        setLoadState('loading');
       }
 
-      // 2. Requirement E: Query pending actions
-      // A. Pending Settlements
       try {
-        const { data: rawSettlements } = await supabase
-          .from('settlements')
-          .select(
-            `
+        // Run balances RPC, pending action queries, and unread count in parallel
+        const [balancesRes, settlementsRes, approvalsRes, submittedRes, disputedRes, unreadRes] =
+          await Promise.all([
+            supabase.rpc('get_friend_balances'),
+            Promise.resolve(
+              supabase
+                .from('settlements')
+                .select(
+                  `
             id, payer_id, recipient_id, amount_paise, created_at, status,
             payer:payer_id (display_name),
             recipient:recipient_id (display_name)
           `
-          )
-          .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
-          .in('status', ['proposed', 'pending'])
-          .order('created_at', { ascending: false });
-
-        if (rawSettlements) {
-          interface RawSettlementRow {
-            id: string;
-            payer_id: string;
-            recipient_id: string;
-            amount_paise: number;
-            created_at: string;
-            payer: { display_name: string } | null;
-            recipient: { display_name: string } | null;
-          }
-          const sRows = rawSettlements as unknown as RawSettlementRow[];
-          setPendingSettlements(
-            sRows.map((s) => ({
-              id: s.id,
-              payer_id: s.payer_id,
-              payer_name: s.payer?.display_name ?? 'Friend',
-              recipient_id: s.recipient_id,
-              recipient_name: s.recipient?.display_name ?? 'Friend',
-              amount_paise: s.amount_paise,
-              created_at: s.created_at,
-              type: s.recipient_id === user.id ? 'incoming' : 'outgoing',
-            }))
-          );
-        }
-      } catch {
-        setPendingSettlements([]);
-      }
-
-      // B. Expenses awaiting my approval
-      try {
-        const { data: myApprovals } = await supabase
-          .from('expense_approvals')
-          .select(
-            `
+                )
+                .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
+                .in('status', ['proposed', 'pending'])
+                .order('created_at', { ascending: false })
+            ).catch(() => ({ data: null, error: null })),
+            Promise.resolve(
+              supabase
+                .from('expense_approvals')
+                .select(
+                  `
             id, expense_id, status, created_at,
             expenses (
               id, title, amount_paise, creator_id,
               creator:creator_id (display_name)
             )
           `
-          )
-          .eq('user_id', user.id)
-          .eq('status', 'pending');
-
-        if (myApprovals) {
-          interface RawApprovalJoin {
-            id: string;
-            expense_id: string;
-            status: string;
-            created_at: string;
-            expenses: {
-              id: string;
-              title: string;
-              amount_paise: number;
-              creator_id: string;
-              creator: { display_name: string } | null;
-            } | null;
-          }
-          const appRows = myApprovals as unknown as RawApprovalJoin[];
-          setAwaitingMyApproval(
-            appRows
-              .filter((a) => a.expenses != null)
-              .map((a) => ({
-                id: a.expenses!.id,
-                title: a.expenses!.title,
-                amount_paise: a.expenses!.amount_paise,
-                creator_name: a.expenses!.creator?.display_name ?? 'Friend',
-                created_at: a.created_at,
-              }))
-          );
-        }
-      } catch {
-        setAwaitingMyApproval([]);
-      }
-
-      // C. Expenses submitted by me awaiting others
-      try {
-        const { data: mySubmitted } = await supabase
-          .from('expenses')
-          .select(
-            `
+                )
+                .eq('user_id', user.id)
+                .eq('status', 'pending')
+            ).catch(() => ({ data: null, error: null })),
+            Promise.resolve(
+              supabase
+                .from('expenses')
+                .select(
+                  `
             id, title, amount_paise, created_at, status,
             approvals:expense_approvals (id, status)
           `
-          )
-          .eq('creator_id', user.id)
-          .eq('status', 'pending_approval');
-
-        if (mySubmitted) {
-          interface RawSubmittedRow {
-            id: string;
-            title: string;
-            amount_paise: number;
-            created_at: string;
-            approvals: Array<{ id: string; status: string }>;
-          }
-          const subRows = mySubmitted as unknown as RawSubmittedRow[];
-          setSubmittedAwaiting(
-            subRows.map((s) => ({
-              id: s.id,
-              title: s.title,
-              amount_paise: s.amount_paise,
-              approved_count: s.approvals?.filter((a) => a.status === 'approved').length ?? 0,
-              total_participants: s.approvals?.length ?? 0,
-              created_at: s.created_at,
-            }))
-          );
-        }
-      } catch {
-        setSubmittedAwaiting([]);
-      }
-
-      // D. Disputed expenses requiring resolution
-      try {
-        const { data: disputed } = await supabase
-          .from('expenses')
-          .select(
-            `
+                )
+                .eq('creator_id', user.id)
+                .eq('status', 'pending_approval')
+            ).catch(() => ({ data: null, error: null })),
+            Promise.resolve(
+              supabase
+                .from('expenses')
+                .select(
+                  `
             id, title, amount_paise, created_at, status,
             approvals:expense_approvals (dispute_category, dispute_reason)
           `
-          )
-          .eq('creator_id', user.id)
-          .eq('status', 'disputed');
+                )
+                .eq('creator_id', user.id)
+                .eq('status', 'disputed')
+            ).catch(() => ({ data: null, error: null })),
+            Promise.resolve(
+              supabase
+                .from('notifications')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', user.id)
+                .is('read_at', null)
+            ).catch(() => ({ count: 0 })),
+          ]);
 
-        if (disputed) {
-          interface RawDisputedRow {
+        if (balancesRes.error) throw balancesRes.error;
+
+        let rawBalances = (balancesRes.data ?? []) as {
+          other_user_id: string;
+          net_paise: number;
+        }[];
+        let homeData: HomeData = {
+          netPaise: 0,
+          owedToPaise: 0,
+          owingPaise: 0,
+          youOwe: [],
+          owedToYou: [],
+        };
+
+        if (rawBalances.length > 0) {
+          const otherIds = rawBalances.map((b) => b.other_user_id);
+          const { data: profileData, error: profileError } = await supabase
+            .from('discoverable_profiles')
+            .select('id, username, display_name, avatar_url')
+            .in('id', otherIds);
+          if (profileError) throw profileError;
+          const profiles = (profileData ?? []) as unknown as Profile[];
+          const missingProfileIds = otherIds.filter(
+            (id) => !profiles.some((profile) => profile.id === id)
+          );
+          if (missingProfileIds.length > 0) {
+            rawBalances = rawBalances.filter(
+              (balance) => !missingProfileIds.includes(balance.other_user_id)
+            );
+          }
+
+          let owedToPaise = 0;
+          let owingPaise = 0;
+          const youOwe: FriendBalance[] = [];
+          const owedToYou: FriendBalance[] = [];
+
+          for (const b of rawBalances) {
+            if (Math.abs(b.net_paise) < 1) continue;
+            const prof = profiles.find((p) => p.id === b.other_user_id);
+            if (!prof) continue;
+
+            const entry: FriendBalance = {
+              userId: b.other_user_id,
+              profile: prof,
+              netPaise: b.net_paise,
+            };
+
+            if (b.net_paise > 0) {
+              owedToPaise += b.net_paise;
+              owedToYou.push(entry);
+            } else {
+              owingPaise += Math.abs(b.net_paise);
+              youOwe.push(entry);
+            }
+          }
+
+          owedToYou.sort((a, b) => b.netPaise - a.netPaise);
+          youOwe.sort((a, b) => Math.abs(b.netPaise) - Math.abs(a.netPaise));
+
+          homeData = {
+            netPaise: owedToPaise - owingPaise,
+            owedToPaise,
+            owingPaise,
+            youOwe: youOwe.slice(0, 5),
+            owedToYou: owedToYou.slice(0, 5),
+          };
+        }
+
+        interface RawSettlementRow {
+          id: string;
+          payer_id: string;
+          recipient_id: string;
+          amount_paise: number;
+          created_at: string;
+          payer: { display_name: string } | null;
+          recipient: { display_name: string } | null;
+        }
+        const nextPendingSettlements: PendingSettlementNotice[] = (
+          (settlementsRes.data ?? []) as unknown as RawSettlementRow[]
+        ).map((s) => ({
+          id: s.id,
+          payer_id: s.payer_id,
+          payer_name: s.payer?.display_name ?? 'Friend',
+          recipient_id: s.recipient_id,
+          recipient_name: s.recipient?.display_name ?? 'Friend',
+          amount_paise: s.amount_paise,
+          created_at: s.created_at,
+          type: s.recipient_id === user.id ? 'incoming' : 'outgoing',
+        }));
+
+        interface RawApprovalJoin {
+          id: string;
+          expense_id: string;
+          status: string;
+          created_at: string;
+          expenses: {
             id: string;
             title: string;
             amount_paise: number;
-            created_at: string;
-            approvals: Array<{ dispute_category: string | null; dispute_reason: string | null }>;
-          }
-          const dispRows = disputed as unknown as RawDisputedRow[];
-          setDisputedExpenses(
-            dispRows.map((d) => ({
-              id: d.id,
-              title: d.title,
-              amount_paise: d.amount_paise,
-              dispute_category: d.approvals?.[0]?.dispute_category ?? null,
-              dispute_reason: d.approvals?.[0]?.dispute_reason ?? null,
-              created_at: d.created_at,
-            }))
-          );
+            creator_id: string;
+            creator: { display_name: string } | null;
+          } | null;
         }
+        const nextAwaitingMyApproval: PendingApprovalExpense[] = (
+          (approvalsRes.data ?? []) as unknown as RawApprovalJoin[]
+        )
+          .filter((a) => a.expenses != null)
+          .map((a) => ({
+            id: a.expenses!.id,
+            title: a.expenses!.title,
+            amount_paise: a.expenses!.amount_paise,
+            creator_name: a.expenses!.creator?.display_name ?? 'Friend',
+            created_at: a.created_at,
+          }));
+
+        interface RawSubmittedRow {
+          id: string;
+          title: string;
+          amount_paise: number;
+          created_at: string;
+          approvals: Array<{ id: string; status: string }>;
+        }
+        const nextSubmittedAwaiting: SubmittedAwaitingExpense[] = (
+          (submittedRes.data ?? []) as unknown as RawSubmittedRow[]
+        ).map((s) => ({
+          id: s.id,
+          title: s.title,
+          amount_paise: s.amount_paise,
+          approved_count: s.approvals?.filter((a) => a.status === 'approved').length ?? 0,
+          total_participants: s.approvals?.length ?? 0,
+          created_at: s.created_at,
+        }));
+
+        interface RawDisputedRow {
+          id: string;
+          title: string;
+          amount_paise: number;
+          created_at: string;
+          approvals: Array<{ dispute_category: string | null; dispute_reason: string | null }>;
+        }
+        const nextDisputed: DisputedExpenseItem[] = (
+          (disputedRes.data ?? []) as unknown as RawDisputedRow[]
+        ).map((d) => ({
+          id: d.id,
+          title: d.title,
+          amount_paise: d.amount_paise,
+          dispute_category: d.approvals?.[0]?.dispute_category ?? null,
+          dispute_reason: d.approvals?.[0]?.dispute_reason ?? null,
+          created_at: d.created_at,
+        }));
+
+        const nextUnreadCount = (unreadRes as { count?: number | null }).count ?? 0;
+
+        const snapshot: HomeSnapshot = {
+          data: homeData,
+          awaitingMyApproval: nextAwaitingMyApproval,
+          submittedAwaiting: nextSubmittedAwaiting,
+          disputedExpenses: nextDisputed,
+          pendingSettlements: nextPendingSettlements,
+          unreadCount: nextUnreadCount,
+          refreshedAt: Date.now(),
+        };
+
+        applySnapshot(snapshot);
+        writeCache(userId, CacheKey.homeBalances, snapshot);
+        setLoadState('loaded');
       } catch {
-        setDisputedExpenses([]);
+        if (cached === null) {
+          setLoadState('error');
+        }
+      } finally {
+        setRefreshing(false);
       }
-
-      setLastRefreshed(new Date());
-      setLoadState('loaded');
-    } catch {
-      setLoadState('error');
-    }
-  }, [user]);
-
-  const loadUnreadCount = useCallback(async () => {
-    if (!user) return;
-    const { count } = await supabase
-      .from('notifications')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .is('read_at', null);
-    setUnreadCount(count ?? 0);
-  }, [user]);
+    },
+    [user, applySnapshot]
+  );
 
   useEffect(() => {
     void loadHomeData();
-    void loadUnreadCount();
-  }, [loadHomeData, loadUnreadCount]);
+  }, [loadHomeData]);
 
   // Recipient action for quick settlement response
   const handleQuickSettlementResponse = async (
@@ -375,8 +392,8 @@ export function HomePage() {
         p_settlement_id: settlementId,
         p_action: action,
       });
-      invalidateCache(user.id, CacheKey.homeBalances);
-      await loadHomeData();
+      invalidateLedgerCaches(user.id);
+      await loadHomeData(true);
     } catch {
       // Ignored
     } finally {
@@ -408,7 +425,7 @@ export function HomePage() {
   })();
 
   return (
-    <div className="page-content">
+    <div className="page-content pb-32">
       {/* Header */}
       <header className="mb-6 flex items-center justify-between">
         <LogoFull />
@@ -422,12 +439,12 @@ export function HomePage() {
             <Handshake size={20} />
           </Link>
           <button
-            onClick={() => void loadHomeData()}
+            onClick={() => void loadHomeData(true)}
             className="btn-ghost rounded-full p-2"
             aria-label="Refresh balances"
-            disabled={isLoading}
+            disabled={isLoading || refreshing}
           >
-            <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} />
+            <RefreshCw size={18} className={isLoading || refreshing ? 'animate-spin' : ''} />
           </button>
           <Link
             to="/notifications"
@@ -469,7 +486,7 @@ export function HomePage() {
             Could not load balances
           </p>
           <p className="text-muted mb-3 text-xs">Check your connection and try again.</p>
-          <button onClick={() => void loadHomeData()} className="btn-secondary text-sm">
+          <button onClick={() => void loadHomeData(true)} className="btn-secondary text-sm">
             <RefreshCw size={14} /> Try again
           </button>
         </div>

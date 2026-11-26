@@ -3,19 +3,23 @@ import { BottomNav } from './BottomNav';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { isOnline, syncError, retrySync } = useOnlineStatus();
+  const { isOnline, syncError, pendingCount, retrySync } = useOnlineStatus();
 
   return (
     <div className="app-shell">
       {!isOnline && (
-        <div className="fixed top-0 right-0 left-0 z-50 bg-[rgb(var(--color-pending))] py-1 text-center text-xs font-medium text-white">
-          Offline — expenses will sync when you reconnect
+        <div
+          role="status"
+          className="sticky top-0 z-40 bg-[rgb(var(--color-pending))] px-3 py-1.5 text-center text-xs font-medium text-white"
+        >
+          Offline — expenses saved on this device will sync when you reconnect
+          {pendingCount > 0 ? ` (${pendingCount} queued)` : ''}
         </div>
       )}
       {isOnline && syncError && (
         <div
           role="alert"
-          className="fixed top-0 right-0 left-0 z-50 bg-[rgb(var(--color-negative))] py-2 text-center text-xs font-medium text-white"
+          className="sticky top-0 z-40 bg-[rgb(var(--color-negative))] px-3 py-2 text-center text-xs font-medium text-white"
         >
           {syncError}{' '}
           <button type="button" className="underline" onClick={() => void retrySync()}>

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -8,11 +8,13 @@ import {
   Trash2,
   CheckSquare,
   Square,
+  Search,
   X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
-import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
+import { readCache, writeCache, invalidateLedgerCaches, CacheKey } from '../../lib/pageCache';
+import { toSafeErrorMessage } from '../../lib/errorMessages';
 import { formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { EmptyState } from '../../components/ui/EmptyState';
@@ -61,9 +63,11 @@ export function ActivityPage() {
   const { user } = useAuth();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'expenses' | 'settlements'>('all');
+  const [localSearch, setLocalSearch] = useState('');
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [hasMore, setHasMore] = useState(false);
 
@@ -79,16 +83,22 @@ export function ActivityPage() {
   } | null>(null);
 
   const load = useCallback(
-    async (currentLimit = limit) => {
+    async (currentLimit = limit, forceRefresh = false) => {
       if (!user) return;
       const userId = user.id;
       const isInitialLoad = currentLimit === PAGE_SIZE;
-      // Serve cached activity feed immediately on initial load (stale-while-revalidate)
+      const cached = isInitialLoad
+        ? readCache<ActivityItem[]>(userId, CacheKey.activityFeed)
+        : { data: null, isStale: true };
+
       if (isInitialLoad) {
-        const cached = readCache<ActivityItem[]>(userId, CacheKey.activityFeed);
         if (cached.data !== null) {
           setItems(cached.data);
           setLoading(false);
+          if (!cached.isStale && !forceRefresh) {
+            return;
+          }
+          setRefreshing(true);
         } else {
           setLoading(true);
         }
@@ -100,8 +110,8 @@ export function ActivityPage() {
       try {
         const activityItems: ActivityItem[] = [];
 
-        // Load expenses user is involved in (bounded to currentLimit per query)
-        const [paidExpensesResult, shareExpensesResult] = await Promise.all([
+        // Load expenses and settlements in parallel (bounded to currentLimit per query)
+        const [paidExpensesResult, shareExpensesResult, settlementsResult] = await Promise.all([
           supabase
             .from('expense_payers')
             .select(
@@ -118,16 +128,26 @@ export function ActivityPage() {
             .eq('user_id', user.id)
             .order('expense_id', { ascending: false })
             .limit(currentLimit),
+          supabase
+            .from('settlements')
+            .select('id, payer_id, recipient_id, amount_paise, status, created_at, notes')
+            .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
+            .in('status', ['confirmed', 'proposed', 'pending'])
+            .order('created_at', { ascending: false })
+            .limit(currentLimit),
         ]);
 
-        if (paidExpensesResult.error || shareExpensesResult.error) {
-          setError('Activity could not be loaded. Please try again.');
-          setItems([]);
+        if (paidExpensesResult.error || shareExpensesResult.error || settlementsResult.error) {
+          if (cached.data === null) {
+            setError('Activity could not be loaded. Please try again.');
+            setItems([]);
+          }
           return;
         }
 
         const { data: paidExpensesRaw } = paidExpensesResult;
         const { data: shareExpensesRaw } = shareExpensesResult;
+        const { data: settlementsRaw } = settlementsResult;
 
         const paidExpenses = (paidExpensesRaw ?? []) as unknown as ExpenseJoinRow[];
         const shareExpenses = (shareExpensesRaw ?? []) as unknown as ExpenseJoinRow[];
@@ -176,21 +196,6 @@ export function ActivityPage() {
           });
         }
 
-        // Load settlements (bounded to currentLimit)
-        const { data: settlementsRaw, error: settlementsError } = await supabase
-          .from('settlements')
-          .select('id, payer_id, recipient_id, amount_paise, status, created_at, notes')
-          .or(`payer_id.eq.${user.id},recipient_id.eq.${user.id}`)
-          .in('status', ['confirmed', 'proposed', 'pending'])
-          .order('created_at', { ascending: false })
-          .limit(currentLimit);
-
-        if (settlementsError) {
-          setError('Activity could not be loaded. Please try again.');
-          setItems([]);
-          return;
-        }
-
         const settlements = (settlementsRaw ?? []) as unknown as SettlementRow[];
 
         for (const s of settlements) {
@@ -223,6 +228,7 @@ export function ActivityPage() {
       } finally {
         setLoading(false);
         setLoadingMore(false);
+        setRefreshing(false);
       }
     },
     [user, limit]
@@ -232,9 +238,29 @@ export function ActivityPage() {
     void load();
   }, [load]);
 
-  const filtered = items.filter(
-    (i) => filter === 'all' || i.type === (filter === 'expenses' ? 'expense' : 'settlement')
-  );
+  const filtered = useMemo(() => {
+    const q = localSearch.trim().toLowerCase();
+    return items.filter((i) => {
+      if (filter !== 'all' && i.type !== (filter === 'expenses' ? 'expense' : 'settlement')) {
+        return false;
+      }
+      if (q && !i.title.toLowerCase().includes(q)) {
+        return false;
+      }
+      return true;
+    });
+  }, [items, filter, localSearch]);
+
+  // On-device financial summary computed from loaded items (zero server cost)
+  const localSummary = useMemo(() => {
+    let inflowPaise = 0;
+    let outflowPaise = 0;
+    for (const item of filtered) {
+      if (item.isPositive) inflowPaise += item.amountPaise;
+      else outflowPaise += item.amountPaise;
+    }
+    return { count: filtered.length, inflowPaise, outflowPaise };
+  }, [filtered]);
 
   // Items eligible for selection: only creator-owned expenses
   const selectableItems = filtered.filter((i) => i.type === 'expense' && i.isOwned);
@@ -275,7 +301,9 @@ export function ActivityPage() {
         p_expense_ids: ids,
       });
       if (rpcError) {
-        setBulkDeleteError(rpcError.message || 'Failed to delete expenses. Please try again.');
+        setBulkDeleteError(
+          toSafeErrorMessage(rpcError, 'Failed to delete expenses. Please try again.')
+        );
         return;
       }
       const result = data as { deleted: number; skipped: number } | null;
@@ -284,13 +312,11 @@ export function ActivityPage() {
       setSelectMode(false);
       setSelected(new Set());
       // Invalidate cache and reload activity after deletion
-      invalidateCache(user.id, CacheKey.activityFeed);
-      void load(PAGE_SIZE);
+      invalidateLedgerCaches(user.id);
+      void load(PAGE_SIZE, true);
       setLimit(PAGE_SIZE);
     } catch (err) {
-      setBulkDeleteError(
-        err instanceof Error ? err.message : 'Failed to delete expenses. Please try again.'
-      );
+      setBulkDeleteError(toSafeErrorMessage(err, 'Failed to delete expenses. Please try again.'));
     } finally {
       setBulkDeleting(false);
     }
@@ -319,6 +345,7 @@ export function ActivityPage() {
     <div>
       <PageHeader
         title="Activity"
+        subtitle={refreshing ? 'Refreshing…' : undefined}
         actions={
           <div className="flex items-center gap-1">
             {selectMode ? (
@@ -412,22 +439,61 @@ export function ActivityPage() {
           </div>
         )}
 
-        {/* Filter tabs */}
+        {/* Filter tabs & on-device search */}
         {!selectMode && (
-          <div className="mb-4 flex gap-2">
-            {(['all', 'expenses', 'settlements'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
-                  filter === f
-                    ? 'bg-[rgb(var(--color-accent))] text-white'
-                    : 'bg-tertiary text-secondary'
-                }`}
-              >
-                {f.charAt(0).toUpperCase() + f.slice(1)}
-              </button>
-            ))}
+          <div className="mb-4 space-y-3">
+            <div className="flex gap-2">
+              {(['all', 'expenses', 'settlements'] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
+                    filter === f
+                      ? 'bg-[rgb(var(--color-accent))] text-white'
+                      : 'bg-tertiary text-secondary'
+                  }`}
+                >
+                  {f.charAt(0).toUpperCase() + f.slice(1)}
+                </button>
+              ))}
+            </div>
+            {items.length > 0 && (
+              <>
+                <div className="relative">
+                  <Search
+                    size={15}
+                    className="text-muted absolute top-1/2 left-3 -translate-y-1/2"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    value={localSearch}
+                    onChange={(e) => setLocalSearch(e.target.value)}
+                    placeholder="Filter activity by title…"
+                    className="input pl-9 text-sm"
+                    aria-label="Filter activity"
+                  />
+                </div>
+                <div className="card grid grid-cols-3 gap-2 py-2.5 text-center">
+                  <div>
+                    <p className="text-muted text-[11px]">Shown</p>
+                    <p className="text-primary text-sm font-semibold tabular-nums">
+                      {localSummary.count}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted text-[11px]">Covered / In</p>
+                    <p className="amount-positive text-sm">{formatINR(localSummary.inflowPaise)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted text-[11px]">Owed / Paid</p>
+                    <p className="amount-negative text-sm">
+                      {formatINR(localSummary.outflowPaise)}
+                    </p>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -436,7 +502,7 @@ export function ActivityPage() {
             <Spinner size={24} />
           </div>
         ) : error ? (
-          <ErrorMessage message={error} retry={() => void load()} />
+          <ErrorMessage message={error} retry={() => void load(limit, true)} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={Activity}

@@ -3,9 +3,10 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { LogOut, Bell, ChevronRight } from 'lucide-react';
+import { LogOut, Bell, ChevronRight, Sun, Moon, Monitor } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../lib/supabase';
+import { getThemePreference, setThemePreference, type ThemePreference } from '../../lib/theme';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
@@ -42,6 +43,12 @@ export function ProfilePage() {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletionBlocked, setDeletionBlocked] = useState(false);
+  const [themePref, setThemePref] = useState<ThemePreference>(() => getThemePreference());
+
+  const handleThemeChange = (next: ThemePreference) => {
+    setThemePref(next);
+    setThemePreference(next);
+  };
 
   const {
     register,
@@ -311,6 +318,40 @@ export function ProfilePage() {
             </Link>
           </div>
         )}
+
+        <div className="card mb-4">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-primary text-sm font-medium">Appearance</p>
+            <span className="text-muted text-[11px]">Saved on this device</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2" role="group" aria-label="Theme preference">
+            {(
+              [
+                { value: 'system', label: 'System', icon: Monitor },
+                { value: 'light', label: 'Light', icon: Sun },
+                { value: 'dark', label: 'Dark', icon: Moon },
+              ] as const
+            ).map(({ value, label, icon: Icon }) => {
+              const active = themePref === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => handleThemeChange(value)}
+                  aria-pressed={active}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors ${
+                    active
+                      ? 'bg-[rgb(var(--color-accent))] text-white'
+                      : 'bg-tertiary text-secondary'
+                  }`}
+                >
+                  <Icon size={14} aria-hidden="true" />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         <nav
           aria-label="Legal and support"

@@ -1,6 +1,23 @@
 import { Logo } from '../brand/Logo';
+import { Spinner } from './Spinner';
 
-export function LoadingScreen() {
+interface LoadingScreenProps {
+  variant?: 'intro' | 'inline';
+}
+
+export function LoadingScreen({ variant = 'intro' }: LoadingScreenProps) {
+  if (variant === 'inline') {
+    return (
+      <div
+        className="flex min-h-[50vh] items-center justify-center p-8"
+        role="status"
+        aria-label="Loading view"
+      >
+        <Spinner size={28} />
+      </div>
+    );
+  }
+
   return (
     <div
       className="bg-app fixed inset-0 z-50 flex items-center justify-center px-4 transition-opacity duration-300 motion-reduce:transition-none"

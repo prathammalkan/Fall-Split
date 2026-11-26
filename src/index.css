@@ -18,7 +18,7 @@
   }
 
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme='light']) {
       --color-bg: 10 10 10;
       --color-bg-secondary: 18 18 18;
       --color-bg-tertiary: 28 28 28;
@@ -31,6 +31,34 @@
       --color-negative: 239 68 68; /* red-500 */
       --color-pending: 245 158 11; /* amber-500 */
     }
+  }
+
+  :root[data-theme='dark'] {
+    --color-bg: 10 10 10;
+    --color-bg-secondary: 18 18 18;
+    --color-bg-tertiary: 28 28 28;
+    --color-border: 38 38 38;
+    --color-text-primary: 245 245 245;
+    --color-text-secondary: 163 163 163;
+    --color-text-muted: 107 107 107;
+    --color-accent: 249 115 22;
+    --color-positive: 34 197 94;
+    --color-negative: 239 68 68;
+    --color-pending: 245 158 11;
+  }
+
+  :root[data-theme='light'] {
+    --color-bg: 255 255 255;
+    --color-bg-secondary: 248 248 248;
+    --color-bg-tertiary: 240 240 240;
+    --color-border: 229 229 229;
+    --color-text-primary: 15 15 15;
+    --color-text-secondary: 107 107 107;
+    --color-text-muted: 163 163 163;
+    --color-accent: 249 115 22;
+    --color-positive: 22 163 74;
+    --color-negative: 220 38 38;
+    --color-pending: 217 119 6;
   }
 
   html {

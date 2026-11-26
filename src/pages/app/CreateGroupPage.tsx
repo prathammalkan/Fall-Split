@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../lib/supabase';
+import { invalidateLedgerCaches } from '../../lib/pageCache';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
@@ -46,6 +47,7 @@ export function CreateGroupPage() {
         return;
       }
 
+      invalidateLedgerCaches(user.id);
       navigate(`/groups/${groupId}`, { replace: true });
     } catch {
       setError('Failed to create the group and add you as its admin. Please try again.');

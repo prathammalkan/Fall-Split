@@ -28,8 +28,9 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // In production you would forward this to a monitoring service.
-    console.error('[ErrorBoundary] Uncaught error:', error, info.componentStack);
+    if (import.meta.env.DEV) {
+      console.error('[ErrorBoundary] Uncaught error:', error, info.componentStack);
+    }
   }
 
   private handleReload = () => {

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { format } from 'date-fns';
 import { Check, Info, ShieldAlert, X } from 'lucide-react';
 import { formatINR } from '../../lib/money';
@@ -37,6 +38,15 @@ export function PaymentRequestModal({
   confirmLabel,
   rejectLabel,
 }: PaymentRequestModalProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !loading) onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, loading, onClose]);
+
   if (!open) return null;
 
   const isIncoming = variant === 'incoming';

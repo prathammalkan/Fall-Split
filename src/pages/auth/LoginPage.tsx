@@ -1,9 +1,17 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../../context/AuthContext';
+import {
+  checkRateLimit,
+  formatRateLimitMessage,
+  getCooldownRemainingSeconds,
+  RATE_LIMITS,
+  recordRateLimitHit,
+  setCooldownSeconds,
+} from '../../lib/rateLimiter';
 import { Logo } from '../../components/brand/Logo';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { Spinner } from '../../components/ui/Spinner';
@@ -26,8 +34,19 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [magicEmail, setMagicEmail] = useState('');
   const [magicLoading, setMagicLoading] = useState(false);
+  const [magicCooldown, setMagicCooldown] = useState(() =>
+    getCooldownRemainingSeconds(RATE_LIMITS.authMagicLink.persistKey)
+  );
   const [googleLoading, setGoogleLoading] = useState(false);
   const [appleLoading, setAppleLoading] = useState(false);
+
+  useEffect(() => {
+    if (magicCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setMagicCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [magicCooldown]);
 
   const rawRedirect = searchParams.get('redirect');
   const redirectTo =
@@ -43,8 +62,14 @@ export function LoginPage() {
 
   const onSubmit = async (data: FormData) => {
     setError(null);
+    const limitStatus = checkRateLimit('authSignIn', RATE_LIMITS.authSignIn);
+    if (!limitStatus.allowed) {
+      setError(formatRateLimitMessage('sign-in attempts', limitStatus.retryAfterSeconds));
+      return;
+    }
     const { error } = await signInWithEmail(data.email, data.password);
     if (error) {
+      recordRateLimitHit('authSignIn', RATE_LIMITS.authSignIn);
       // Generic message to avoid account enumeration
       setError('Invalid email or password. Please try again.');
       return;
@@ -65,15 +90,27 @@ export function LoginPage() {
   const handleMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!magicEmail) return;
+    if (magicCooldown > 0) {
+      setError(formatRateLimitMessage('magic link requests', magicCooldown));
+      return;
+    }
     saveRedirectForPostAuth();
     setMagicLoading(true);
     setError(null);
     const { error } = await signInWithMagicLink(magicEmail, redirectTo);
     setMagicLoading(false);
     if (error) {
-      setError('Could not send magic link. Try again.');
+      if (error.message?.toLowerCase().includes('rate limit') || error.message?.includes('429')) {
+        setCooldownSeconds(RATE_LIMITS.authMagicLink.persistKey, 60);
+        setMagicCooldown(60);
+        setError('Too many magic link requests. Please wait 60s before trying again.');
+      } else {
+        setError('Could not send magic link. Try again.');
+      }
       return;
     }
+    setCooldownSeconds(RATE_LIMITS.authMagicLink.persistKey, 60);
+    setMagicCooldown(60);
     setMagicLinkSent(true);
   };
 
@@ -227,10 +264,10 @@ export function LoginPage() {
           <button
             type="submit"
             className="btn-secondary w-full"
-            disabled={magicLoading || !magicEmail}
+            disabled={magicLoading || magicCooldown > 0 || !magicEmail}
           >
             {magicLoading ? <Spinner size={16} /> : <Mail size={16} />}
-            Send magic link
+            {magicCooldown > 0 ? `Resend link in ${magicCooldown}s` : 'Send magic link'}
           </button>
         </form>
 

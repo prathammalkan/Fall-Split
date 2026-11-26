@@ -57,4 +57,28 @@ test.describe('unauthenticated navigation', () => {
     // Transitions into the application after intro duration
     await expect(page).toHaveURL(/\/login$/);
   });
+
+  test('redirects protected routes to sign-in and renders lazy auth/legal routes cleanly', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+
+    await page.goto('/friends');
+    await expect(page).toHaveURL(/\/login$/);
+
+    await page.goto('/forgot-password');
+    await expect(page.getByRole('heading', { name: 'Forgot password' })).toBeVisible();
+
+    await page.goto('/reset-password');
+    await expect(page.getByRole('heading', { name: 'Set new password' })).toBeVisible();
+
+    await page.goto('/terms');
+    await expect(page.getByRole('heading', { name: 'Terms & Conditions' })).toBeVisible();
+
+    await page.goto('/support');
+    await expect(page.getByRole('heading', { name: 'Contact & Support' })).toBeVisible();
+
+    expect(pageErrors).toEqual([]);
+  });
 });

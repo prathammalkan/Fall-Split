@@ -33,6 +33,14 @@ export function InviteQrScanner({ onScan, onClose }: InviteQrScannerProps) {
   const [retryAttempt, setRetryAttempt] = useState(0);
 
   useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
     let disposed = false;
     let interval: ReturnType<typeof setInterval> | undefined;
     let detecting = false;

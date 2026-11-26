@@ -27,7 +27,10 @@ import { Avatar } from '../../components/ui/Avatar';
 import { Spinner } from '../../components/ui/Spinner';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
 import { SheetDialog } from '../../components/ui/SheetDialog';
-import { queueOfflineOperation } from '../../lib/offlineQueue';
+import { checkQueueWarning, queueOfflineOperation } from '../../lib/offlineQueue';
+import { invalidateLedgerCaches } from '../../lib/pageCache';
+import { consumeRateLimit, formatRateLimitMessage, RATE_LIMITS } from '../../lib/rateLimiter';
+import { toSafeErrorMessage } from '../../lib/errorMessages';
 import type { Profile, Group } from '../../types';
 import { format } from 'date-fns';
 
@@ -104,15 +107,29 @@ export function AddExpensePage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const submissionKey = useRef<{ fingerprint: string; key: string } | null>(null);
+  const [queueWarning, setQueueWarning] = useState<string | null>(null);
   const [submissionSuccess, setSubmissionSuccess] = useState<{
     id: string;
     title: string;
     totalPaise: number;
     userSharePaise: number;
     isPendingApproval: boolean;
+    isOfflineQueued?: boolean;
   } | null>(null);
 
   const totalPaise = parseINR(amountStr) ?? 0;
+
+  useEffect(() => {
+    if (!user?.id || navigator.onLine) {
+      setQueueWarning(null);
+      return;
+    }
+    void checkQueueWarning(user.id).then((state) => {
+      if (state.isApproachingLimit && state.message) {
+        setQueueWarning(state.message);
+      }
+    });
+  }, [user?.id]);
 
   const loadContacts = useCallback(async () => {
     if (!user || !profile) {
@@ -349,6 +366,8 @@ export function AddExpensePage() {
     }
   };
 
+  const MAX_EXPENSE_PAISE = 100_000_000_000;
+
   const handleSave = async () => {
     if (!user || contactsLoading || contactsError) return;
     setError(null);
@@ -356,12 +375,18 @@ export function AddExpensePage() {
       setError('Please enter a title.');
       return;
     }
-    if (totalPaise <= 0) {
+    if (totalPaise <= 0 || totalPaise > MAX_EXPENSE_PAISE) {
       setError('Please enter a valid amount.');
       return;
     }
     if (participants.length === 0) {
       setError('Select at least one participant.');
+      return;
+    }
+
+    const limitResult = consumeRateLimit('expenseCreate', RATE_LIMITS.expenseCreate, user.id);
+    if (!limitResult.allowed) {
+      setError(formatRateLimitMessage('expense submissions', limitResult.retryAfterSeconds));
       return;
     }
 
@@ -432,6 +457,9 @@ export function AddExpensePage() {
     setSaving(true);
 
     try {
+      const userShare = allocations?.find((a) => a.userId === user.id)?.amountPaise ?? 0;
+      const otherParticipants = participants.filter((p) => p.userId !== user.id);
+
       if (!navigator.onLine) {
         await queueOfflineOperation({
           type: 'create_expense',
@@ -444,7 +472,14 @@ export function AddExpensePage() {
           },
           idempotencyKey,
         });
-        navigate(-1);
+        setSubmissionSuccess({
+          id: idempotencyKey,
+          title: title.trim(),
+          totalPaise,
+          userSharePaise: userShare,
+          isPendingApproval: otherParticipants.length > 0,
+          isOfflineQueued: true,
+        });
         return;
       }
 
@@ -462,14 +497,15 @@ export function AddExpensePage() {
 
       if (expError || typeof expenseId !== 'string' || !expenseId) {
         setError(
-          expError?.message ?? 'Expense was not confirmed as fully persisted. Please retry.'
+          toSafeErrorMessage(
+            expError,
+            'Expense was not confirmed as fully persisted. Please retry.'
+          )
         );
         return;
       }
 
-      const userShare = allocations?.find((a) => a.userId === user.id)?.amountPaise ?? 0;
-      const otherParticipants = participants.filter((p) => p.userId !== user.id);
-
+      invalidateLedgerCaches(user.id);
       setSubmissionSuccess({
         id: expenseId,
         title: title.trim(),
@@ -478,9 +514,7 @@ export function AddExpensePage() {
         isPendingApproval: otherParticipants.length > 0,
       });
     } catch (saveError) {
-      setError(
-        saveError instanceof Error ? saveError.message : 'Expense could not be saved. Please retry.'
-      );
+      setError(toSafeErrorMessage(saveError, 'Expense could not be saved. Please retry.'));
     } finally {
       setSaving(false);
     }
@@ -528,7 +562,9 @@ export function AddExpensePage() {
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[rgb(var(--color-primary)/0.12)] text-[rgb(var(--color-primary))]">
             <CheckCircle2 size={32} />
           </div>
-          <h2 className="text-primary text-xl font-bold">Expense submitted</h2>
+          <h2 className="text-primary text-xl font-bold">
+            {submissionSuccess.isOfflineQueued ? 'Saved offline' : 'Expense submitted'}
+          </h2>
           <p className="text-secondary mt-2 text-base font-semibold">
             {submissionSuccess.title} — {formatINR(submissionSuccess.totalPaise)}
           </p>
@@ -536,25 +572,34 @@ export function AddExpensePage() {
             Your share — {formatINR(submissionSuccess.userSharePaise)}
           </p>
           <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[rgb(var(--color-pending)/0.15)] px-3 py-1 text-xs font-medium text-[rgb(var(--color-pending))]">
-            Status — {submissionSuccess.isPendingApproval ? 'Pending Approval' : 'Confirmed'}
+            Status —{' '}
+            {submissionSuccess.isOfflineQueued
+              ? 'Queued on Device'
+              : submissionSuccess.isPendingApproval
+                ? 'Pending Approval'
+                : 'Confirmed'}
           </div>
           <p className="text-secondary mt-3 text-sm">
-            {submissionSuccess.isPendingApproval
-              ? 'Waiting for the other required participants to approve.'
-              : 'All required participants have approved this expense.'}
+            {submissionSuccess.isOfflineQueued
+              ? 'Stored safely on your device and will sync automatically when you reconnect.'
+              : submissionSuccess.isPendingApproval
+                ? 'Waiting for the other required participants to approve.'
+                : 'All required participants have approved this expense.'}
           </p>
           <div className="mt-6 flex flex-col gap-2.5 sm:flex-row sm:justify-center">
-            <button
-              type="button"
-              onClick={() => navigate(`/expenses/${submissionSuccess.id}`, { replace: true })}
-              className="btn-primary w-full px-6 py-2.5 text-sm font-medium sm:w-auto"
-            >
-              View Expense
-            </button>
+            {!submissionSuccess.isOfflineQueued && (
+              <button
+                type="button"
+                onClick={() => navigate(`/expenses/${submissionSuccess.id}`, { replace: true })}
+                className="btn-primary w-full px-6 py-2.5 text-sm font-medium sm:w-auto"
+              >
+                View Expense
+              </button>
+            )}
             <button
               type="button"
               onClick={() => navigate('/', { replace: true })}
-              className="btn-secondary w-full px-6 py-2.5 text-sm font-medium sm:w-auto"
+              className={`${submissionSuccess.isOfflineQueued ? 'btn-primary' : 'btn-secondary'} w-full px-6 py-2.5 text-sm font-medium sm:w-auto`}
             >
               Done
             </button>
@@ -572,6 +617,14 @@ export function AddExpensePage() {
           <div className="page-content space-y-5 pt-4">
             {contactsError && (
               <ErrorMessage message={contactsError} retry={() => void loadContacts()} />
+            )}
+            {queueWarning && (
+              <div
+                role="status"
+                className="rounded-lg border border-[rgb(var(--color-pending)/0.35)] bg-[rgb(var(--color-pending)/0.08)] p-3 text-xs text-[rgb(var(--color-pending))]"
+              >
+                {queueWarning}
+              </div>
             )}
             <div>
               <label className="text-muted mb-1 block text-xs">Amount</label>
@@ -807,7 +860,7 @@ export function AddExpensePage() {
                       inputMode="decimal"
                       value={p.amountPaise !== undefined ? (p.amountPaise / 100).toFixed(2) : ''}
                       onChange={(e) => {
-                        const paise = Math.round(parseFloat(e.target.value || '0') * 100);
+                        const paise = parseINR(e.target.value) ?? 0;
                         setParticipants((prev) =>
                           prev.map((x) =>
                             x.userId === p.userId ? { ...x, amountPaise: paise } : x
@@ -838,16 +891,28 @@ export function AddExpensePage() {
                     <input
                       type="number"
                       inputMode="decimal"
-                      value={p.percentage ?? ''}
-                      onChange={(e) =>
+                      value={
+                        p.percentage !== undefined && Number.isFinite(p.percentage)
+                          ? p.percentage
+                          : ''
+                      }
+                      onChange={(e) => {
+                        const parsed =
+                          e.target.value === '' ? undefined : parseFloat(e.target.value);
                         setParticipants((prev) =>
                           prev.map((x) =>
                             x.userId === p.userId
-                              ? { ...x, percentage: parseFloat(e.target.value) }
+                              ? {
+                                  ...x,
+                                  percentage:
+                                    parsed !== undefined && Number.isFinite(parsed)
+                                      ? parsed
+                                      : undefined,
+                                }
                               : x
                           )
-                        )
-                      }
+                        );
+                      }}
                       className="input pr-6 text-sm"
                       placeholder="0"
                       max="100"
@@ -860,9 +925,15 @@ export function AddExpensePage() {
                 </div>
               ))}
               <p
-                className={`text-right text-xs ${Math.abs(participants.reduce((a, p) => a + (p.percentage ?? 0), 0) - 100) < 0.01 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}
+                className={`text-right text-xs ${Math.abs(participants.reduce((a, p) => a + (Number.isFinite(p.percentage) ? (p.percentage ?? 0) : 0), 0) - 100) < 0.01 ? 'text-[rgb(var(--color-positive))]' : 'text-[rgb(var(--color-negative))]'}`}
               >
-                {participants.reduce((a, p) => a + (p.percentage ?? 0), 0).toFixed(1)}% of 100%
+                {participants
+                  .reduce(
+                    (a, p) => a + (Number.isFinite(p.percentage) ? (p.percentage ?? 0) : 0),
+                    0
+                  )
+                  .toFixed(1)}
+                % of 100%
               </p>
             </div>
           )}
@@ -922,8 +993,14 @@ export function AddExpensePage() {
                       placeholder={`Item ${idx + 1}`}
                     />
                     <button
-                      onClick={() => setLineItems((prev) => prev.filter((x) => x.id !== item.id))}
-                      className="text-muted"
+                      type="button"
+                      onClick={() =>
+                        lineItems.length > 1 &&
+                        setLineItems((prev) => prev.filter((x) => x.id !== item.id))
+                      }
+                      disabled={lineItems.length <= 1}
+                      className="text-muted disabled:opacity-30"
+                      aria-label={`Remove item ${idx + 1}`}
                     >
                       <X size={16} />
                     </button>

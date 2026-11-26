@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   UserPlus,
@@ -14,7 +14,14 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
-import { readCache, writeCache, invalidateCache, CacheKey } from '../../lib/pageCache';
+import {
+  readCache,
+  writeCache,
+  invalidateLedgerCaches,
+  CacheKey,
+  SEARCH_CACHE_TTL_MS,
+} from '../../lib/pageCache';
+import { consumeRateLimit, formatRateLimitMessage, RATE_LIMITS } from '../../lib/rateLimiter';
 import { formatINR } from '../../lib/money';
 import { Avatar } from '../../components/ui/Avatar';
 import { PageHeader } from '../../components/layout/PageHeader';
@@ -52,6 +59,7 @@ export function FriendsPage() {
   const [friends, setFriends] = useState<FriendWithBalance[]>([]);
   const [pending, setPending] = useState<PendingRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Profile[]>([]);
   const [searching, setSearching] = useState(false);
@@ -71,99 +79,113 @@ export function FriendsPage() {
     [navigate]
   );
 
-  const load = useCallback(async () => {
-    if (!user) return;
-    const userId = user.id;
-    // Serve cached friends immediately (stale-while-revalidate)
-    const cached = readCache<{ friends: FriendWithBalance[]; pending: PendingRequest[] }>(
-      userId,
-      CacheKey.friendsList
-    );
-    if (cached.data !== null) {
-      setFriends(cached.data.friends);
-      setPending(cached.data.pending);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
-    setLoadError(null);
-    try {
-      const { data: requestsRaw, error: requestsError } = await supabase
-        .from('friend_requests')
-        .select('id, sender_id, receiver_id, status, created_at')
-        .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`);
-      if (requestsError) throw requestsError;
-
-      const requests = (requestsRaw ?? []) as unknown as RawRequest[];
-      if (requests.length === 0) {
-        setFriends([]);
-        setPending([]);
-        writeCache(userId, CacheKey.friendsList, { friends: [], pending: [] });
-        return;
+  const load = useCallback(
+    async (forceRefresh = false) => {
+      if (!user) return;
+      const userId = user.id;
+      // Serve cached friends immediately (stale-while-revalidate)
+      const cached = readCache<{ friends: FriendWithBalance[]; pending: PendingRequest[] }>(
+        userId,
+        CacheKey.friendsList
+      );
+      if (cached.data !== null) {
+        setFriends(cached.data.friends);
+        setPending(cached.data.pending);
+        setLoading(false);
+        if (!cached.isStale && !forceRefresh) {
+          return;
+        }
+        setRefreshing(true);
+      } else {
+        setLoading(true);
       }
+      setLoadError(null);
+      try {
+        const { data: requestsRaw, error: requestsError } = await supabase
+          .from('friend_requests')
+          .select('id, sender_id, receiver_id, status, created_at')
+          .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`);
+        if (requestsError) throw requestsError;
 
-      const otherIds = requests.map((r) => (r.sender_id === user.id ? r.receiver_id : r.sender_id));
+        const requests = (requestsRaw ?? []) as unknown as RawRequest[];
+        if (requests.length === 0) {
+          setFriends([]);
+          setPending([]);
+          writeCache(userId, CacheKey.friendsList, { friends: [], pending: [] });
+          return;
+        }
 
-      let profiles: Profile[] = [];
-      if (otherIds.length > 0) {
-        const { data, error: profilesError } = await supabase
-          .from('discoverable_profiles')
-          .select('id, username, display_name, avatar_url')
-          .in('id', otherIds);
-        if (profilesError) throw profilesError;
-        profiles = (data ?? []) as unknown as Profile[];
-      }
+        const otherIds = requests.map((r) =>
+          r.sender_id === user.id ? r.receiver_id : r.sender_id
+        );
 
-      // Fetch balances for all friends
-      const balanceMap: Record<string, number> = {};
-      const { data: balances, error: balanceError } = await supabase.rpc('get_friend_balances');
-      if (balanceError) throw balanceError;
-      if (balances) {
-        for (const b of balances as { other_user_id: string; net_paise: number }[]) {
+        const balancesPromise = supabase.rpc('get_friend_balances');
+        const profilesRes =
+          otherIds.length > 0
+            ? await supabase
+                .from('discoverable_profiles')
+                .select('id, username, display_name, avatar_url')
+                .in('id', otherIds)
+            : { data: [] as Profile[], error: null };
+        const balancesRes = await balancesPromise;
+
+        if (profilesRes.error) throw profilesRes.error;
+        if (balancesRes.error) throw balancesRes.error;
+
+        const profiles = (profilesRes.data ?? []) as unknown as Profile[];
+        const balanceMap: Record<string, number> = {};
+        for (const b of (balancesRes.data ?? []) as {
+          other_user_id: string;
+          net_paise: number;
+        }[]) {
           balanceMap[b.other_user_id] = b.net_paise;
         }
-      }
 
-      const accepted: FriendWithBalance[] = [];
-      const pendingList: PendingRequest[] = [];
+        const accepted: FriendWithBalance[] = [];
+        const pendingList: PendingRequest[] = [];
 
-      for (const req of requests) {
-        const otherId = req.sender_id === user.id ? req.receiver_id : req.sender_id;
-        const prof = profiles.find((p) => p.id === otherId);
-        if (!prof) continue;
+        for (const req of requests) {
+          const otherId = req.sender_id === user.id ? req.receiver_id : req.sender_id;
+          const prof = profiles.find((p) => p.id === otherId);
+          if (!prof) continue;
 
-        if (req.status === 'accepted') {
-          accepted.push({
-            profile: prof,
-            friendRequestId: req.id,
-            netPaise: balanceMap[otherId] ?? 0,
-          });
-        } else if (req.status === 'pending') {
-          pendingList.push({
-            id: req.id,
-            profile: prof,
-            direction: req.sender_id === user.id ? 'sent' : 'received',
-            createdAt: req.created_at,
-          });
+          if (req.status === 'accepted') {
+            accepted.push({
+              profile: prof,
+              friendRequestId: req.id,
+              netPaise: balanceMap[otherId] ?? 0,
+            });
+          } else if (req.status === 'pending') {
+            pendingList.push({
+              id: req.id,
+              profile: prof,
+              direction: req.sender_id === user.id ? 'sent' : 'received',
+              createdAt: req.created_at,
+            });
+          }
         }
+
+        // Sort friends: those with outstanding balances first, then alphabetically
+        accepted.sort(
+          (a, b) =>
+            Math.abs(b.netPaise) - Math.abs(a.netPaise) ||
+            a.profile.display_name.localeCompare(b.profile.display_name)
+        );
+
+        setFriends(accepted);
+        setPending(pendingList);
+        writeCache(userId, CacheKey.friendsList, { friends: accepted, pending: pendingList });
+      } catch {
+        if (cached.data === null) {
+          setLoadError('Could not load friends and balances. Check your connection and try again.');
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-
-      // Sort friends: those with outstanding balances first, then alphabetically
-      accepted.sort(
-        (a, b) =>
-          Math.abs(b.netPaise) - Math.abs(a.netPaise) ||
-          a.profile.display_name.localeCompare(b.profile.display_name)
-      );
-
-      setFriends(accepted);
-      setPending(pendingList);
-      writeCache(userId, CacheKey.friendsList, { friends: accepted, pending: pendingList });
-    } catch {
-      setLoadError('Could not load friends and balances. Check your connection and try again.');
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+    },
+    [user]
+  );
 
   useEffect(() => {
     void load();
@@ -172,18 +194,40 @@ export function FriendsPage() {
   const search = useCallback(
     async (query: string) => {
       const version = ++searchVersion.current;
+      const trimmed = query.trim();
       setSearchError(null);
-      if (!query.trim() || query.length < 2) {
+      if (!trimmed || trimmed.length < 2) {
         setSearchResults([]);
         setSearching(false);
         return;
       }
+
+      if (user?.id) {
+        const cachedSearch = readCache<Profile[]>(
+          user.id,
+          CacheKey.userSearch(trimmed),
+          SEARCH_CACHE_TTL_MS
+        );
+        if (cachedSearch.data !== null && !cachedSearch.isStale) {
+          setSearchResults(cachedSearch.data);
+          setSearching(false);
+          return;
+        }
+      }
+
+      const limitResult = consumeRateLimit('usernameSearch', RATE_LIMITS.usernameSearch, user?.id);
+      if (!limitResult.allowed) {
+        setSearching(false);
+        setSearchError(formatRateLimitMessage('username searches', limitResult.retryAfterSeconds));
+        return;
+      }
+
       setSearching(true);
       try {
         const { data, error } = await supabase
           .from('discoverable_profiles')
           .select('id, username, display_name, avatar_url')
-          .ilike('username', `${query}%`)
+          .ilike('username', `${trimmed}%`)
           .neq('id', user?.id ?? '')
           .limit(10);
         if (version !== searchVersion.current) return;
@@ -191,7 +235,11 @@ export function FriendsPage() {
           setSearchResults([]);
           setSearchError('Could not search users. Check your connection and try again.');
         } else {
-          setSearchResults((data ?? []) as unknown as Profile[]);
+          const fresh = (data ?? []) as unknown as Profile[];
+          setSearchResults(fresh);
+          if (user?.id) {
+            writeCache(user.id, CacheKey.userSearch(trimmed), fresh);
+          }
         }
       } catch {
         if (version === searchVersion.current) {
@@ -214,6 +262,11 @@ export function FriendsPage() {
 
   const sendRequest = async (receiverId: string) => {
     if (!user) return;
+    const limitResult = consumeRateLimit('friendRequest', RATE_LIMITS.friendRequest, user.id);
+    if (!limitResult.allowed) {
+      setActionError(formatRateLimitMessage('friend requests', limitResult.retryAfterSeconds));
+      return;
+    }
     setActionError(null);
     setRequestActionLoading(receiverId);
     try {
@@ -228,7 +281,8 @@ export function FriendsPage() {
       }
       setSearchQuery('');
       setSearchResults([]);
-      void load();
+      invalidateLedgerCaches(user.id);
+      void load(true);
     } catch {
       setActionError('Could not send friend request. Check your connection and try again.');
     } finally {
@@ -259,8 +313,10 @@ export function FriendsPage() {
         );
         return;
       }
-      invalidateCache(user?.id ?? '', CacheKey.friendsList);
-      void load();
+      if (user?.id) {
+        invalidateLedgerCaches(user.id);
+      }
+      void load(true);
     } catch {
       setActionError('Could not update friend request. Check your connection and try again.');
     } finally {
@@ -269,11 +325,21 @@ export function FriendsPage() {
   };
 
   const showSearch = searchQuery.length > 0;
+  const filteredFriends = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return friends;
+    return friends.filter(
+      (f) =>
+        f.profile.display_name.toLowerCase().includes(q) ||
+        f.profile.username.toLowerCase().includes(q)
+    );
+  }, [friends, searchQuery]);
 
   return (
     <div>
       <PageHeader
         title="Friends"
+        subtitle={refreshing ? 'Refreshing…' : undefined}
         actions={
           <div className="flex items-center gap-1">
             <button
@@ -295,7 +361,7 @@ export function FriendsPage() {
       />
       <div className="page-content pt-4">
         {actionError && <ErrorMessage message={actionError} />}
-        {loadError && <ErrorMessage message={loadError} retry={() => void load()} />}
+        {loadError && <ErrorMessage message={loadError} retry={() => void load(true)} />}
 
         {/* Search */}
         <div className="relative mb-4">
@@ -432,11 +498,15 @@ export function FriendsPage() {
           />
         ) : (
           <div>
-            {friends.length > 0 && (
+            {filteredFriends.length > 0 && (
               <div>
-                <p className="section-title mb-2">Friends ({friends.length})</p>
+                <p className="section-title mb-2">
+                  {searchQuery.trim()
+                    ? `Matching friends (${filteredFriends.length})`
+                    : `Friends (${filteredFriends.length})`}
+                </p>
                 <div className="card overflow-hidden p-0" role="list">
-                  {friends.map((f) => (
+                  {filteredFriends.map((f) => (
                     <Link
                       key={f.friendRequestId}
                       to={`/friends/${f.profile.id}`}

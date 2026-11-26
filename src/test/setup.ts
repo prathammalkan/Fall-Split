@@ -1,6 +1,13 @@
 import '@testing-library/jest-dom';
 import 'fake-indexeddb/auto';
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
+import { clearAllCaches } from '../lib/pageCache';
+import { resetRateLimits } from '../lib/rateLimiter';
+
+beforeEach(() => {
+  clearAllCaches();
+  resetRateLimits();
+});
 
 // Mock Supabase — tests must not make real network calls
 vi.mock('../lib/supabase', () => ({

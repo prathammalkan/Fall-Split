@@ -1,8 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Plus, Receipt, UserPlus, CheckSquare, Square, Trash2, X } from 'lucide-react';
+import { Plus, Receipt, UserPlus, CheckSquare, Square, Trash2, X, ArrowRight } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, db } from '../../lib/supabase';
+import { readCache, writeCache, invalidateLedgerCaches, CacheKey } from '../../lib/pageCache';
+import { simplifyDebts } from '../../lib/balances';
 import { formatINR } from '../../lib/money';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Avatar } from '../../components/ui/Avatar';
@@ -21,7 +23,11 @@ export function GroupDetailPage() {
   const [group, setGroup] = useState<Group | null>(null);
   const [members, setMembers] = useState<Array<GroupMember & { profile: Profile }>>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [groupBalances, setGroupBalances] = useState<Array<{ user_id: string; net_paise: number }>>(
+    []
+  );
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
 
@@ -34,52 +40,126 @@ export function GroupDetailPage() {
     null
   );
 
-  const load = useCallback(async () => {
-    if (!groupId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [groupResult, membersResult, expensesResult] = await Promise.all([
-        supabase.from('groups').select('*').eq('id', groupId).single(),
-        supabase
-          .from('group_members')
-          .select('*, profile:user_id (id, display_name, avatar_url, username)')
-          .eq('group_id', groupId)
-          .is('removed_at', null),
-        supabase
-          .from('expenses')
-          .select('id, title, amount_paise, expense_date, status, creator_id')
-          .eq('group_id', groupId)
-          .in('status', ['active', 'confirmed', 'pending_approval', 'disputed'])
-          .order('expense_date', { ascending: false })
-          .limit(30),
-      ]);
-      if (groupResult.error || membersResult.error || expensesResult.error) {
-        setGroup(null);
-        setError('Group details could not be loaded. Please try again.');
-        return;
+  const load = useCallback(
+    async (forceRefresh = false) => {
+      if (!groupId) return;
+      const cacheUserId = user?.id ?? '';
+      const cached = cacheUserId
+        ? readCache<{
+            group: Group;
+            members: Array<GroupMember & { profile: Profile }>;
+            expenses: Expense[];
+            groupBalances: Array<{ user_id: string; net_paise: number }>;
+          }>(cacheUserId, CacheKey.groupDetail(groupId))
+        : { data: null, isStale: true };
+
+      if (cached.data !== null) {
+        setGroup(cached.data.group);
+        setMembers(cached.data.members);
+        setExpenses(cached.data.expenses);
+        setGroupBalances(cached.data.groupBalances);
+        setLoading(false);
+        if (!cached.isStale && !forceRefresh) {
+          return;
+        }
+        setRefreshing(true);
+      } else {
+        setLoading(true);
       }
-      const { data: g } = groupResult;
-      const { data: m } = membersResult;
-      const { data: e } = expensesResult;
-      if (!g) {
-        setError('Group not found.');
-        return;
+      setError(null);
+      try {
+        const balancesPromise: Promise<{ data: unknown; error: unknown }> =
+          typeof db?.rpc === 'function'
+            ? Promise.resolve(db.rpc('get_group_balances', { p_group_id: groupId })).catch(() => ({
+                data: null,
+                error: null,
+              }))
+            : Promise.resolve({ data: null, error: null });
+
+        const [groupResult, membersResult, expensesResult, balancesResult] = await Promise.all([
+          supabase.from('groups').select('*').eq('id', groupId).single(),
+          supabase
+            .from('group_members')
+            .select('*, profile:user_id (id, display_name, avatar_url, username)')
+            .eq('group_id', groupId)
+            .is('removed_at', null),
+          supabase
+            .from('expenses')
+            .select('id, title, amount_paise, expense_date, status, creator_id')
+            .eq('group_id', groupId)
+            .in('status', ['active', 'confirmed', 'pending_approval', 'disputed'])
+            .order('expense_date', { ascending: false })
+            .limit(30),
+          balancesPromise,
+        ]);
+        if (groupResult.error || membersResult.error || expensesResult.error) {
+          if (cached.data === null) {
+            setGroup(null);
+            setError('Group details could not be loaded. Please try again.');
+          }
+          return;
+        }
+        const { data: g } = groupResult;
+        const { data: m } = membersResult;
+        const { data: e } = expensesResult;
+        if (!g) {
+          if (cached.data === null) {
+            setError('Group not found.');
+          }
+          return;
+        }
+        const typedMembers = (m ?? []) as unknown as Array<GroupMember & { profile: Profile }>;
+        const typedExpenses = e ?? [];
+        const typedBalances = (
+          (balancesResult?.data ?? []) as Array<{ user_id: string; net_paise: number }>
+        ).map((b) => ({
+          user_id: b.user_id,
+          net_paise: Number(b.net_paise),
+        }));
+
+        setGroup(g);
+        setMembers(typedMembers);
+        setExpenses(typedExpenses);
+        setGroupBalances(typedBalances);
+
+        if (cacheUserId) {
+          writeCache(cacheUserId, CacheKey.groupDetail(groupId), {
+            group: g,
+            members: typedMembers,
+            expenses: typedExpenses,
+            groupBalances: typedBalances,
+          });
+        }
+      } catch {
+        if (cached.data === null) {
+          setGroup(null);
+          setError('Group details could not be loaded. Please try again.');
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-      setGroup(g);
-      setMembers((m ?? []) as unknown as Array<GroupMember & { profile: Profile }>);
-      setExpenses(e ?? []);
-    } catch {
-      setGroup(null);
-      setError('Group details could not be loaded. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  }, [groupId]);
+    },
+    [groupId, user?.id]
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // On-device debt simplification (zero extra server load)
+  const simplifiedDebts = useMemo(() => {
+    if (groupBalances.length === 0) return [];
+    try {
+      const normalized = groupBalances.map((b) => ({
+        userId: b.user_id,
+        netPaise: b.net_paise,
+      }));
+      return simplifyDebts(normalized);
+    } catch {
+      return [];
+    }
+  }, [groupBalances]);
 
   const ownedExpenseIds = expenses.filter((e) => e.creator_id === user?.id).map((e) => e.id);
 
@@ -119,7 +199,8 @@ export function GroupDetailPage() {
       setDeleteResult({ deleted: result.deleted, skipped: result.skipped });
       setSelected(new Set());
       setShowDeleteConfirm(false);
-      await load();
+      if (user?.id) invalidateLedgerCaches(user.id);
+      await load(true);
     } catch {
       setDeleteResult({ deleted: 0, skipped: selected.size });
       setShowDeleteConfirm(false);
@@ -164,6 +245,7 @@ export function GroupDetailPage() {
     <div>
       <PageHeader
         title={group.name}
+        subtitle={refreshing ? 'Refreshing…' : undefined}
         back
         actions={
           <div className="flex items-center gap-2">
@@ -303,6 +385,62 @@ export function GroupDetailPage() {
               participant approval ({formatINR(pendingTotalPaise)}) — excluded from confirmed
               balances until accepted.
             </p>
+          </div>
+        )}
+
+        {/* On-device simplified debt suggestions */}
+        {simplifiedDebts.length > 0 && (
+          <div className="card space-y-2.5">
+            <div className="flex items-center justify-between">
+              <p className="section-title">Suggested settlements</p>
+              <span className="text-muted text-[11px]">Calculated on device</span>
+            </div>
+            <div className="space-y-2">
+              {simplifiedDebts.map((debt) => {
+                const fromName =
+                  debt.fromUserId === user?.id
+                    ? 'You'
+                    : (members.find((m) => m.user_id === debt.fromUserId)?.profile?.display_name ??
+                      'Member');
+                const toName =
+                  debt.toUserId === user?.id
+                    ? 'You'
+                    : (members.find((m) => m.user_id === debt.toUserId)?.profile?.display_name ??
+                      'Member');
+                const targetFriendId =
+                  debt.fromUserId === user?.id
+                    ? debt.toUserId
+                    : debt.toUserId === user?.id
+                      ? debt.fromUserId
+                      : null;
+
+                return (
+                  <div
+                    key={`${debt.fromUserId}-${debt.toUserId}`}
+                    className="bg-tertiary flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs"
+                  >
+                    <div className="flex min-w-0 items-center gap-1.5 font-medium">
+                      <span className="text-primary truncate">{fromName}</span>
+                      <ArrowRight size={12} className="text-muted flex-shrink-0" />
+                      <span className="text-primary truncate">{toName}</span>
+                    </div>
+                    <div className="flex flex-shrink-0 items-center gap-2">
+                      <span className="text-primary font-bold tabular-nums">
+                        {formatINR(debt.amountPaise)}
+                      </span>
+                      {targetFriendId && (
+                        <Link
+                          to={`/friends/${targetFriendId}`}
+                          className="font-semibold text-[rgb(var(--color-accent))] hover:underline"
+                        >
+                          Settle
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
