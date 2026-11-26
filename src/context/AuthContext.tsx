@@ -39,7 +39,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 function getAuthCallbackUrl(redirectTo?: string): string {
   const callback = new URL('/auth/callback', window.location.origin);
-  if (isSafeRedirect(redirectTo)) {
+  if (redirectTo && redirectTo !== '/' && isSafeRedirect(redirectTo)) {
     callback.searchParams.set('redirect', redirectTo);
   }
   return callback.toString();
@@ -217,7 +217,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       provider: 'google',
       options: {
         redirectTo: callbackUrl,
-        queryParams: { access_type: 'offline', prompt: 'consent' },
+        queryParams: { prompt: 'select_account' },
       },
     });
     return { error: error as Error | null };

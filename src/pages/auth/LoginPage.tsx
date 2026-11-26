@@ -48,6 +48,15 @@ export function LoginPage() {
     return () => clearInterval(timer);
   }, [magicCooldown]);
 
+  useEffect(() => {
+    const resetOAuthLoading = () => {
+      setGoogleLoading(false);
+      setAppleLoading(false);
+    };
+    window.addEventListener('pageshow', resetOAuthLoading);
+    return () => window.removeEventListener('pageshow', resetOAuthLoading);
+  }, []);
+
   const rawRedirect = searchParams.get('redirect');
   const redirectTo =
     rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/';
@@ -115,6 +124,10 @@ export function LoginPage() {
   };
 
   const handleGoogle = async () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setError('You are currently offline. Connect to the internet to continue with Google.');
+      return;
+    }
     saveRedirectForPostAuth();
     setGoogleLoading(true);
     setError(null);
@@ -127,6 +140,10 @@ export function LoginPage() {
   };
 
   const handleApple = async () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setError('You are currently offline. Connect to the internet to continue with Apple.');
+      return;
+    }
     saveRedirectForPostAuth();
     setAppleLoading(true);
     setError(null);

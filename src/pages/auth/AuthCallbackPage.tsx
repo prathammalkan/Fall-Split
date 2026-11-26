@@ -138,18 +138,32 @@ export function AuthCallbackPage() {
 
     // Check for provider or verification error
     if (errorParam || errorCode) {
-      const isExpiredOrInvalid =
+      const lowerDesc = errorDescription?.toLowerCase() ?? '';
+      const isEmailOtpExpired =
         errorCode === 'otp_expired' ||
-        errorCode === 'invalid_grant' ||
-        errorDescription?.toLowerCase().includes('expired') ||
-        errorDescription?.toLowerCase().includes('invalid');
+        ((lowerDesc.includes('email') || lowerDesc.includes('link') || lowerDesc.includes('otp')) &&
+          (lowerDesc.includes('expired') || lowerDesc.includes('invalid')));
 
-      displayError(
-        isExpiredOrInvalid
-          ? 'This email verification link has expired or has already been used.'
-          : (errorDescription ?? 'Authentication could not be completed. Please try again.'),
-        isExpiredOrInvalid
-      );
+      if (isEmailOtpExpired) {
+        displayError('This email verification link has expired or has already been used.', true);
+      } else if (errorParam === 'access_denied') {
+        displayError('Sign-in was cancelled. You can try signing in again below.', false);
+      } else if (
+        lowerDesc.includes('external code') ||
+        lowerDesc.includes('database error saving new user') ||
+        lowerDesc.includes('provider is not enabled') ||
+        lowerDesc.includes('unsupported provider')
+      ) {
+        displayError(
+          'Google or OAuth sign-in could not be completed. Please try again or use email sign-in.',
+          false
+        );
+      } else {
+        displayError(
+          errorDescription ?? 'Authentication could not be completed. Please try again.',
+          false
+        );
+      }
       return;
     }
 
@@ -244,7 +258,7 @@ export function AuthCallbackPage() {
           );
         }
       },
-      code ? 6_000 : 1_500
+      code ? 12_000 : 1_500
     );
 
     return () => {

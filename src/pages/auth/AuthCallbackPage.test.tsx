@@ -226,6 +226,28 @@ describe('AuthCallbackPage token exchange, error recovery, and redirect safety',
     });
   });
 
+  it('displays cancellation message when OAuth access is denied without showing resend box', async () => {
+    renderPage(['/auth/callback?error=access_denied&error_description=User+denied+access']);
+
+    expect(
+      await screen.findByText(/sign-in was cancelled\. you can try signing in again below\./i)
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /send new link/i })).toBeNull();
+  });
+
+  it('does not misclassify OAuth exchange errors containing invalid as expired email links', async () => {
+    renderPage([
+      '/auth/callback?error=server_error&error_description=Unable+to+exchange+external+code%3A+invalid+client',
+    ]);
+
+    expect(
+      await screen.findByText(
+        /google or oauth sign-in could not be completed\. please try again or use email sign-in\./i
+      )
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /send new link/i })).toBeNull();
+  });
+
   it('displays expired/cross-browser message when code exchange times out without session', async () => {
     vi.useFakeTimers();
     mocks.getSession.mockResolvedValue({ data: { session: null }, error: null });
@@ -233,7 +255,7 @@ describe('AuthCallbackPage token exchange, error recovery, and redirect safety',
     renderPage(['/auth/callback?code=unresolvable_code']);
 
     await act(async () => {
-      vi.advanceTimersByTime(6500);
+      vi.advanceTimersByTime(12500);
     });
 
     expect(screen.getByText(/was opened in a different browser or has expired/i)).toBeTruthy();

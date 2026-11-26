@@ -77,6 +77,14 @@ export default function App() {
   const { session, loading } = useAuth();
   const [introDone, setIntroDone] = useState(() => {
     if (import.meta.env.MODE === 'test') return true;
+    if (
+      typeof window !== 'undefined' &&
+      (window.location.pathname.startsWith('/auth/') ||
+        window.location.pathname === '/reset-password' ||
+        window.location.pathname === '/verify-email')
+    ) {
+      return true;
+    }
     try {
       return sessionStorage.getItem('fs_intro_shown') === '1';
     } catch {
@@ -172,6 +180,7 @@ export default function App() {
             <Route path="/search" element={<SearchPage />} />
             <Route path="/invite/:token" element={<InvitePage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/terms" element={<TermsPage />} />

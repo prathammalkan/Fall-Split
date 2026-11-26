@@ -81,4 +81,40 @@ test.describe('unauthenticated navigation', () => {
 
     expect(pageErrors).toEqual([]);
   });
+
+  test('handles OAuth cancellation and exchange errors cleanly without email resend UI', async ({
+    page,
+  }) => {
+    await page.goto('/auth/callback?error=access_denied&error_description=User+denied+access');
+    await expect(page.getByText(/sign-in was cancelled/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: /send new link/i })).toHaveCount(0);
+
+    await page.goto(
+      '/auth/callback?error=server_error&error_description=Unable+to+exchange+external+code%3A+invalid_grant'
+    );
+    await expect(page.getByText(/google or oauth sign-in could not be completed/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: /send new link/i })).toHaveCount(0);
+  });
+
+  test('initiates Google OAuth PKCE redirect with same-origin callback URL', async ({ page }) => {
+    let capturedAuthUrl = '';
+    await page.route('**/auth/v1/authorize**', async (route) => {
+      capturedAuthUrl = route.request().url();
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: '<html><body>OAuth Redirect Intercepted</body></html>',
+      });
+    });
+
+    await page.goto('/login');
+    const appOrigin = new URL(page.url()).origin;
+    await page.getByRole('button', { name: /continue with google/i }).click();
+
+    await expect.poll(() => capturedAuthUrl).toContain('/auth/v1/authorize');
+    const parsedUrl = new URL(capturedAuthUrl);
+    expect(parsedUrl.searchParams.get('provider')).toBe('google');
+    expect(parsedUrl.searchParams.get('code_challenge_method')?.toLowerCase()).toBe('s256');
+    expect(parsedUrl.searchParams.get('redirect_to')).toBe(`${appOrigin}/auth/callback`);
+  });
 });
